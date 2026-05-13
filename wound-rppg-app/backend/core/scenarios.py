@@ -1,0 +1,167 @@
+import json
+import numpy as np
+from pathlib import Path
+
+from .pos_algorithm import pos_algorithm, bandpass_filter, spatial_average
+from .signal_quality import full_quality_report
+from .spatial_maps import compute_all_maps, maps_to_base64_dict, roi_stats
+from .session_manager import (
+    load_session,
+    load_results,
+    save_results,
+    SESSIONS_DIR,
+)
+
+# 128x128 = compromise between signal quality and Render memory usage
+_ANALYSIS_RESIZE = (64, 64)
+
+
+def _round_or_zero(value, digits=2):
+    try:
+        return round(float(value), digits)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _load_scenario(session_name: str, sessions_root: Path = None) -> dict:
+    root = sessions_root or SESSIONS_DIR
+    scenario_path = root / session_name / "scenario.json"
+    if not scenario_path.exists():
+        return {}
+
+    with open(scenario_path) as f:
+        return json.load(f)
+
+
+def _result_summary(session_name: str, result: dict, sessions_root: Path = None) -> dict:
+    quality = result.get("quality", {})
+    hr = result.get("hr", {})
+    snr = result.get("snr", {})
+    tms = result.get("tms", {})
+
+    return {
+        "name": session_name,
+        "scenario": _load_scenario(session_name, sessions_root=sessions_root),
+        "fps": _round_or_zero(result.get("fps"), 2),
+        "hr_bpm": _round_or_zero(hr.get("hr_bpm"), 1),
+        "snr_db": _round_or_zero(snr.get("mean_snr"), 2),
+        "tms": _round_or_zero(tms.get("tms"), 4),
+        "score": int(quality.get("score", 0) or 0),
+        "label": quality.get("label", "UNKNOWN"),
+        "color": quality.get("color", "#9ca3af"),
+    }
+
+
+def analyze_session(session_name: str, sessions_root: Path = None, force: bool = False) -> dict:
+    root = sessions_root or SESSIONS_DIR
+
+    if not force:
+        try:
+            return load_results(session_name, sessions_root=root)
+        except FileNotFoundError:
+            pass
+
+    frames, meta = load_session(session_name, sessions_root=root, resize=_ANALYSIS_RESIZE)
+    fps = float(meta.get("measured_fps", 30))
+
+    rgb = spatial_average(frames)
+    raw = pos_algorithm(rgb, fps)
+    filt = bandpass_filter(raw, fps)
+
+    report = full_quality_report(raw, filt, fps, rgb_signal=rgb)
+
+    hr_hz = report["hr"]["hr_hz"] or 1.2
+    maps = compute_all_maps(frames, fps, hr_hz)
+    maps_b64 = maps_to_base64_dict(maps, size=(256, 256))
+
+    results = {
+        "session_name": session_name,
+        "meta": meta,
+        "fps": fps,
+        "n_frames": len(frames),
+        **report,
+        "maps": maps_b64,
+        "amp_stats": roi_stats(maps["amplitude"]),
+    }
+
+    save_results(session_name, results, sessions_root=root)
+    return results
+
+
+def compare_two(session_a: str, session_b: str, sessions_root: Path = None) -> dict:
+    root = sessions_root or SESSIONS_DIR
+    result_a = analyze_session(session_a, sessions_root=root)
+    result_b = analyze_session(session_b, sessions_root=root)
+
+    summary_a = _result_summary(session_a, result_a, sessions_root=root)
+    summary_b = _result_summary(session_b, result_b, sessions_root=root)
+
+    return {
+        "session_a": summary_a,
+        "session_b": summary_b,
+        "diff": {
+            "hr_bpm": round(summary_b["hr_bpm"] - summary_a["hr_bpm"], 1),
+            "snr_db": round(summary_b["snr_db"] - summary_a["snr_db"], 2),
+            "score": summary_b["score"] - summary_a["score"],
+        },
+        "maps_a": result_a.get("maps", {}),
+        "maps_b": result_b.get("maps", {}),
+    }
+
+
+def compare_multiple(session_names: list, sessions_root: Path = None) -> dict:
+    root = sessions_root or SESSIONS_DIR
+    ranking = []
+
+    for session_name in session_names:
+        result = analyze_session(session_name, sessions_root=root)
+        ranking.append(_result_summary(session_name, result, sessions_root=root))
+
+    ranking.sort(
+        key=lambda item: (item["score"], item["snr_db"], item["tms"]),
+        reverse=True,
+    )
+
+    return {"ranking": ranking, "n": len(ranking)}
+
+
+def analyze_roi(
+    session_name: str,
+    roi: tuple,
+    label: str = "roi",
+    sessions_root: Path = None,
+) -> dict:
+    root = sessions_root or SESSIONS_DIR
+    frames, meta = load_session(session_name, sessions_root=root, resize=_ANALYSIS_RESIZE)
+    fps = float(meta.get("measured_fps", 30))
+
+    x, y, w, h = roi
+    roi_frames = frames[:, y:y + h, x:x + w, :]
+
+    rgb = spatial_average(roi_frames)
+    raw = pos_algorithm(rgb, fps)
+    filt = bandpass_filter(raw, fps)
+
+    report = full_quality_report(raw, filt, fps, rgb_signal=rgb)
+    report["roi"] = {"x": x, "y": y, "w": w, "h": h}
+    report["label"] = label
+    return report
+
+
+def compare_rois(
+    session_name: str,
+    roi_wound: tuple,
+    roi_periwound: tuple,
+    sessions_root: Path = None,
+) -> dict:
+    wound = analyze_roi(session_name, roi_wound, "wound", sessions_root)
+    periwound = analyze_roi(session_name, roi_periwound, "periwound", sessions_root)
+
+    amp_w = wound.get("snr", {}).get("mean_snr", 0)
+    amp_pw = periwound.get("snr", {}).get("mean_snr", 0)
+
+    return {
+        "wound": wound,
+        "periwound": periwound,
+        "ratio": round(amp_w / (amp_pw + 1e-8), 3),
+    }

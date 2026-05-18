@@ -5,7 +5,7 @@ Convert an AVI video into a session ZIP compatible with the Wound-rPPG app.
 Expected ZIP structure:
   session_name/
     frames/
-      0000.png
+      0000.png  (or .jpg)
       0001.png
       ...
     metadata.json
@@ -14,6 +14,7 @@ Usage:
   python3 backend/scripts/avi_to_session_zip.py /path/to/video.avi
   python3 backend/scripts/avi_to_session_zip.py /path/to/video.avi --session-name pure_s01
   python3 backend/scripts/avi_to_session_zip.py /path/to/video.avi --output /path/to/pure_s01.zip
+  python3 backend/scripts/avi_to_session_zip.py /path/to/video.avi --format jpg --quality 92
 """
 
 from __future__ import annotations
@@ -50,6 +51,19 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional output ZIP path. Defaults to ./<session-name>.zip",
     )
+    parser.add_argument(
+        "--format",
+        choices=["png", "jpg"],
+        default="png",
+        help="Frame image format. Use 'jpg' for much smaller ZIPs (default: png).",
+    )
+    parser.add_argument(
+        "--quality",
+        type=int,
+        default=92,
+        metavar="1-100",
+        help="JPEG quality when --format jpg is used (default: 92).",
+    )
     return parser.parse_args()
 
 
@@ -57,6 +71,8 @@ def extract_video_to_session_dir(
     input_video: Path,
     session_name: str,
     session_root: Path,
+    fmt: str = "png",
+    quality: int = 92,
 ) -> tuple[int, dict]:
     if not input_video.exists():
         raise FileNotFoundError(f"Input video not found: {input_video}")
@@ -83,8 +99,9 @@ def extract_video_to_session_dir(
             if not ok:
                 break
 
-            frame_path = frames_dir / f"{frame_count:04d}.png"
-            if not cv2.imwrite(str(frame_path), frame_bgr):
+            frame_path = frames_dir / f"{frame_count:04d}.{fmt}"
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality] if fmt == "jpg" else []
+            if not cv2.imwrite(str(frame_path), frame_bgr, encode_params):
                 raise RuntimeError(f"Unable to write frame: {frame_path}")
 
             if fps > 0:
@@ -108,7 +125,7 @@ def extract_video_to_session_dir(
         "duration_s": round(duration_s, 6),
         "frame_width": width,
         "frame_height": height,
-        "save_format": "png",
+        "save_format": fmt,
         "timestamps_rel": timestamps_rel,
     }
 
@@ -141,12 +158,14 @@ def main() -> int:
             input_video=input_video,
             session_name=session_name,
             session_root=tmp_root,
+            fmt=args.format,
+            quality=args.quality,
         )
         make_zip_from_session_dir(tmp_root / session_name, output_zip)
 
     print(f"ZIP created: {output_zip}")
     print(f"Session name: {session_name}")
-    print(f"Frames: {frame_count}")
+    print(f"Frames: {frame_count}  format: {args.format}" + (f"  quality: {args.quality}" if args.format == "jpg" else ""))
     print(
         "Video info: "
         f"{metadata['frame_width']}x{metadata['frame_height']} @ {metadata['measured_fps']} fps",

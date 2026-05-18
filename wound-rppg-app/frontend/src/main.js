@@ -20,14 +20,12 @@ import "./styles/global.css";
 import App    from "./App.vue";
 import router from "./router/index.js";
 
-// ECharts
 use([
   CanvasRenderer, LineChart, BarChart, HeatmapChart,
   GridComponent, TooltipComponent, LegendComponent,
   MarkLineComponent, VisualMapComponent, DataZoomComponent,
 ]);
 
-// Vuetify dark theme
 const vuetify = createVuetify({
   components,
   directives,
@@ -38,17 +36,17 @@ const vuetify = createVuetify({
       dark: {
         dark: true,
         colors: {
-          background:  "#0d1117",
-          surface:     "#161b22",
-          primary:     "#00c8ff",
-          secondary:   "#7ee787",
-          accent:      "#f0883e",
-          error:       "#f85149",
-          warning:     "#f0883e",
-          info:        "#00c8ff",
-          success:     "#7ee787",
-          "surface-2": "#21262d",
-          border:      "#30363d",
+          background:  "#000000",
+          surface:     "#080810",
+          primary:     "#e8622a",
+          secondary:   "#06b6d4",
+          accent:      "#e8622a",
+          error:       "#ef4444",
+          warning:     "#f59e0b",
+          info:        "#06b6d4",
+          success:     "#22d47e",
+          "surface-2": "#16161f",
+          border:      "#252535",
         },
       },
     },

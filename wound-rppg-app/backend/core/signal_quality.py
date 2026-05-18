@@ -158,10 +158,11 @@ def quality_score(mean_snr: float, tms: float, fps: float) -> dict:
     Composite quality score (0–100) combining SNR, TMS, and frame rate.
     Returns label, color, score, and actionable recommendations.
     """
-    # Each component is linearly scaled to its contribution ceiling
-    snr_score = min(max((mean_snr + 5) / 11 * 40, 0), 40)  # SNR -5..+6 dB → 0..40
-    tms_score = min(max((tms - 0.8) / 0.2 * 40, 0), 40)    # TMS 0.8..1.0  → 0..40
-    fps_score = min(max((fps - 15) / 35 * 20, 0), 20)       # FPS 15..50    → 0..20
+    # Each component linearly scaled to its contribution ceiling.
+    # SNR bounds align with ai_interpretation thresholds: 0..10 dB → 0..40 pts.
+    snr_score = min(max(mean_snr / 10.0 * 40, 0), 40)    # SNR 0..10 dB → 0..40
+    tms_score = min(max((tms - 0.8) / 0.2 * 40, 0), 40)  # TMS 0.8..1.0  → 0..40
+    fps_score = min(max((fps - 15) / 35 * 20, 0), 20)     # FPS 15..50    → 0..20
 
     score = int(snr_score + tms_score + fps_score)
 
@@ -176,12 +177,12 @@ def quality_score(mean_snr: float, tms: float, fps: float) -> dict:
 
     recommendations = []
     if mean_snr < 0:
-        recommendations.append("Check lighting conditions (LEDs)")
-        recommendations.append("Reduce motion artifacts")
+        recommendations.append("Vérifiez l'éclairage (LEDs vertes recommandées)")
+        recommendations.append("Réduisez les artefacts de mouvement")
     if tms < 0.96:
-        recommendations.append("Signal morphology is unstable")
+        recommendations.append("Morphologie du signal instable — stabilisez la caméra")
     if fps < 25:
-        recommendations.append("Frame rate too low (minimum 25 Hz)")
+        recommendations.append("Fréquence d'images insuffisante (minimum 25 Hz)")
 
     return {
         "score":           score,

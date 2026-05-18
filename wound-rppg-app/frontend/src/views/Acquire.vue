@@ -3,261 +3,255 @@
     <!-- Header -->
     <div class="page-header">
       <div>
-        <h1 class="page-title">
-          <v-icon color="primary" size="26" class="mr-2">mdi-record-circle</v-icon>
-          Acquisition en direct
-        </h1>
-        <p class="page-sub">
-          Protocole ST-rPPG · 50 fps · 8 s · 512 × 512 · PNG
-        </p>
+        <h1 class="page-title gradient-text">Acquisition</h1>
+        <p class="page-sub">Protocole ST-rPPG · POS (Wang 2017) · 512 × 512</p>
       </div>
-      <v-chip v-if="phase === 'done'" color="success" variant="tonal" prepend-icon="mdi-check-circle">
-        Session analysée
-      </v-chip>
+      <span v-if="phase === 'done'" class="done-badge">
+        <v-icon size="13" color="#22d47e">mdi-check-circle</v-icon> Session enregistrée
+      </span>
     </div>
 
     <!-- Mode tabs -->
-    <v-tabs v-model="mode" color="primary" class="mb-4" :disabled="phase !== 'idle'">
-      <v-tab value="camera" prepend-icon="mdi-record-circle-outline">Caméra live</v-tab>
-      <v-tab value="upload" prepend-icon="mdi-folder-upload-outline">Session existante</v-tab>
-    </v-tabs>
+    <div class="acq-tabs mb-5">
+      <button :class="['acq-tab', { active: mode === 'camera' }]" :disabled="phase !== 'idle'"
+        @click="mode = 'camera'">
+        <v-icon size="14">mdi-record-circle-outline</v-icon> Caméra live
+      </button>
+      <button :class="['acq-tab', { active: mode === 'upload' }]" :disabled="phase !== 'idle'"
+        @click="mode = 'upload'">
+        <v-icon size="14">mdi-folder-upload-outline</v-icon> Session existante
+      </button>
+    </div>
 
     <!-- ── CAMERA MODE ── -->
-    <v-window v-model="mode">
-      <v-window-item value="camera">
-        <v-row>
-          <!-- Camera preview -->
-          <v-col cols="12" md="7">
-            <v-card class="glass-card overflow-hidden" style="position: relative">
-              <div class="camera-wrapper">
-                <video ref="videoEl" autoplay playsinline muted class="camera-video" />
-                <canvas ref="canvasEl" :width="CFG.width" :height="CFG.height" style="display:none" />
+    <template v-if="mode === 'camera'">
+      <v-row>
+        <!-- Camera preview -->
+        <v-col cols="12" md="7">
+          <div class="card-block" style="position: relative; overflow: hidden">
+            <div class="camera-wrapper">
+              <video ref="videoEl" autoplay playsinline muted class="camera-video" />
+              <canvas ref="canvasEl" :width="CFG.width" :height="CFG.height" style="display:none" />
 
-                <div v-if="!cameraReady && !cameraError" class="camera-overlay">
-                  <v-progress-circular indeterminate color="primary" size="48" />
-                  <p class="mt-3" style="color:var(--muted)">Accès à la caméra…</p>
+              <div v-if="!cameraReady && !cameraError" class="camera-overlay">
+                <v-progress-circular indeterminate color="primary" size="48" />
+                <p class="mt-3" style="color:var(--muted)">Initialisation de la caméra…</p>
+              </div>
+
+              <div v-if="cameraError" class="camera-overlay">
+                <v-icon size="56" color="error">mdi-camera-off</v-icon>
+                <p class="mt-3" style="color:var(--danger)">{{ cameraError }}</p>
+                <button class="btn-ghost mt-3" @click="initCamera">Réessayer</button>
+              </div>
+
+              <div v-if="phase === 'recording'" class="rec-badge">
+                <span class="pulse">●</span> REC
+              </div>
+
+              <transition name="fade">
+                <div v-if="countdown > 0" class="countdown-overlay">{{ countdown }}</div>
+              </transition>
+
+              <div v-if="phase === 'recording'" class="video-progress">
+                <div class="video-progress-fill" :style="{ width: progressPct + '%' }" />
+              </div>
+            </div>
+
+            <div v-if="phase === 'recording'" class="frame-bar">
+              <v-icon size="15" style="color:var(--accent)">mdi-image-multiple</v-icon>
+              <span class="frame-count">{{ capturedFrames }}</span>
+              <span style="color:var(--muted)"> / {{ totalFrames }} frames</span>
+              <span class="ml-auto" style="color:var(--muted); font-size:0.8rem">
+                {{ elapsedSec.toFixed(1) }} s / {{ recordDuration }} s
+              </span>
+            </div>
+          </div>
+        </v-col>
+
+        <!-- Controls -->
+        <v-col cols="12" md="5">
+          <div class="card-block mb-3">
+            <div class="card-head">
+              <v-icon size="13" color="#e8622a">mdi-tune</v-icon>
+              Protocole d'acquisition
+            </div>
+            <div style="padding: 16px">
+              <div class="param-grid mb-4">
+                <div class="param-item">
+                  <div class="param-label">Résolution</div>
+                  <div class="param-value">{{ CFG.width }} × {{ CFG.height }}</div>
                 </div>
-
-                <div v-if="cameraError" class="camera-overlay">
-                  <v-icon size="56" color="error">mdi-camera-off</v-icon>
-                  <p class="mt-3" style="color:var(--danger)">{{ cameraError }}</p>
-                  <v-btn variant="tonal" color="primary" class="mt-3" @click="initCamera">Réessayer</v-btn>
+                <div class="param-item">
+                  <div class="param-label">Format</div>
+                  <div class="param-value">PNG</div>
                 </div>
-
-                <div v-if="phase === 'recording'" class="rec-badge">
-                  <span class="pulse">●</span> REC
+                <div class="param-item">
+                  <div class="param-label">Durée</div>
+                  <div class="param-value">{{ recordDuration }} s</div>
                 </div>
-
-                <transition name="fade">
-                  <div v-if="countdown > 0" class="countdown-overlay">{{ countdown }}</div>
-                </transition>
-
-                <div v-if="phase === 'recording'" class="video-progress">
-                  <div class="video-progress-fill" :style="{ width: progressPct + '%' }" />
+                <div class="param-item">
+                  <div class="param-label">Frames totales</div>
+                  <div class="param-value">{{ totalFrames }}</div>
                 </div>
               </div>
 
-              <div v-if="phase === 'recording'" class="frame-bar">
-                <v-icon size="16" color="accent" class="mr-1">mdi-image-multiple</v-icon>
-                <span class="frame-count">{{ capturedFrames }}</span>
-                <span style="color:var(--muted)"> / {{ totalFrames }} frames</span>
-                <span class="ml-auto" style="color:var(--muted); font-size:0.8rem">
-                  {{ elapsedSec.toFixed(1) }} s / {{ recordDuration }} s
-                </span>
-              </div>
-            </v-card>
-          </v-col>
+              <!-- FPS selector -->
+              <div class="param-label mb-2">Cadence (FPS)</div>
+              <v-btn-toggle v-model="recordFps" mandatory density="compact"
+                color="primary" variant="outlined" :disabled="phase !== 'idle'" class="mb-4">
+                <v-btn :value="25">25 FPS</v-btn>
+                <v-btn :value="30">30 FPS</v-btn>
+                <v-btn :value="50">50 FPS <v-chip size="x-small" color="primary" variant="tonal" class="ml-1">Lab</v-chip></v-btn>
+                <v-btn :value="60">60 FPS</v-btn>
+              </v-btn-toggle>
 
-          <!-- Controls -->
-          <v-col cols="12" md="5">
-            <v-card class="glass-card mb-3">
-              <v-card-title class="card-title">
-                <v-icon color="primary" class="mr-2">mdi-tune</v-icon>
-                Protocole d'acquisition
-              </v-card-title>
-              <v-card-text class="pt-0">
-                <div class="param-grid">
-                  <div class="param-item">
-                    <div class="param-label">Résolution</div>
-                    <div class="param-value">{{ CFG.width }} × {{ CFG.height }}</div>
-                  </div>
-                  <div class="param-item">
-                    <div class="param-label">Format</div>
-                    <div class="param-value">PNG</div>
-                  </div>
-                  <div class="param-item">
-                    <div class="param-label">Durée</div>
-                    <div class="param-value">{{ recordDuration }} s</div>
-                  </div>
-                  <div class="param-item">
-                    <div class="param-label">Frames totales</div>
-                    <div class="param-value">{{ totalFrames }}</div>
-                  </div>
-                </div>
-                <!-- FPS selector -->
-                <div class="mt-3">
-                  <div class="param-label mb-1">Cadence (FPS)</div>
-                  <v-btn-toggle v-model="recordFps" mandatory density="compact"
-                    color="primary" variant="outlined" :disabled="phase !== 'idle'">
-                    <v-btn :value="25">25 fps</v-btn>
-                    <v-btn :value="30">30 fps</v-btn>
-                    <v-btn :value="50">50 fps <v-chip size="x-small" color="primary" variant="tonal" class="ml-1">lab</v-chip></v-btn>
-                    <v-btn :value="60">60 fps</v-btn>
-                  </v-btn-toggle>
-                </div>
-                <!-- Duration slider -->
-                <div class="mt-3 mb-1">
-                  <div class="d-flex justify-space-between mb-1">
-                    <span style="font-size:0.78rem; color:var(--muted)">Durée d'enregistrement</span>
-                    <span style="font-size:0.78rem; color:var(--accent); font-weight:600">{{ recordDuration }} s</span>
-                  </div>
-                  <v-slider v-model="recordDuration" :min="10" :max="60" :step="5"
-                    color="primary" track-color="border" hide-details
-                    :disabled="phase !== 'idle'" density="compact" />
-                  <div class="d-flex justify-space-between" style="font-size:0.7rem; color:var(--muted); margin-top:-4px">
-                    <span>10 s</span><span>60 s</span>
-                  </div>
-                </div>
-                <v-divider class="my-3" style="border-color:var(--border)" />
-                <v-text-field
-                  v-model="sessionLabel"
-                  label="Label de session (optionnel)"
-                  placeholder="Ex: paume_droite, plaie_J3"
-                  density="compact"
-                  variant="outlined"
-                  :disabled="phase !== 'idle'"
-                  prepend-inner-icon="mdi-tag-outline"
-                  hide-details
-                />
-              </v-card-text>
-            </v-card>
+              <!-- Duration slider -->
+              <div class="d-flex justify-space-between mb-1">
+                <span style="font-size:0.78rem; color:var(--muted)">Durée d'enregistrement</span>
+                <span style="font-size:0.78rem; color:var(--accent); font-weight:600">{{ recordDuration }} s</span>
+              </div>
+              <v-slider v-model="recordDuration" :min="10" :max="60" :step="5"
+                color="primary" track-color="border" hide-details
+                :disabled="phase !== 'idle'" density="compact" class="mb-1" />
+              <div class="d-flex justify-space-between mb-4" style="font-size:0.7rem; color:var(--muted)">
+                <span>10 s</span><span>60 s</span>
+              </div>
+
+              <div style="height:1px; background:var(--border); margin-bottom:16px" />
+              <v-text-field
+                v-model="sessionLabel"
+                label="Identifiant de session (optionnel)"
+                placeholder="Ex: plaie_J3, paume_droite"
+                density="compact"
+                variant="outlined"
+                :disabled="phase !== 'idle'"
+                prepend-inner-icon="mdi-tag-outline"
+                hide-details
+              />
+            </div>
+          </div>
+
+          <button v-if="phase === 'idle'" class="btn-accent" style="width:100%; justify-content:center; padding:14px"
+            :disabled="!cameraReady" @click="startCountdown">
+            <v-icon size="16">mdi-record-circle-outline</v-icon>
+            Lancer l'acquisition
+          </button>
+
+          <button v-if="phase === 'recording'" class="btn-stop" style="width:100%" @click="abortRecording">
+            <v-icon size="16">mdi-stop-circle-outline</v-icon>
+            Arrêter
+          </button>
+
+          <div v-if="phase !== 'idle' && phase !== 'recording'" class="card-block mt-3">
+            <div class="status-row" style="padding: 14px 16px">
+              <v-progress-circular v-if="phase !== 'done' && phase !== 'error'"
+                indeterminate color="primary" size="20" width="2" class="mr-3" />
+              <v-icon v-else-if="phase === 'done'" size="20" style="color:var(--green)" class="mr-3">mdi-check-circle</v-icon>
+              <v-icon v-else size="20" style="color:var(--danger)" class="mr-3">mdi-alert-circle</v-icon>
+              <span :style="{ color: phase === 'error' ? 'var(--danger)' : phase === 'done' ? 'var(--green)' : 'var(--accent)', fontSize: '0.85rem' }">
+                {{ statusMessage }}
+              </span>
+            </div>
+            <div v-if="phase === 'uploading' && uploadProgress > 0" style="padding: 0 16px 14px">
+              <div class="progress-track">
+                <div class="progress-fill" :style="{ width: uploadProgress + '%' }" />
+              </div>
+            </div>
+          </div>
+        </v-col>
+      </v-row>
+    </template>
+
+    <!-- ── UPLOAD MODE ── -->
+    <template v-if="mode === 'upload'">
+      <v-row justify="center">
+        <v-col cols="12" md="8">
+          <div
+            class="drop-zone"
+            :class="{ 'drop-zone--active': isDragging, 'drop-zone--disabled': phase !== 'idle' }"
+            @dragover.prevent="isDragging = true"
+            @dragleave="isDragging = false"
+            @drop.prevent="onDrop"
+            @click="phase === 'idle' && fileInput.click()"
+          >
+            <input ref="fileInput" type="file" accept=".zip,.avi" style="display:none"
+                   @change="onFileChange" />
 
             <template v-if="phase === 'idle'">
-              <v-btn color="primary" block size="large" :disabled="!cameraReady"
-                     @click="startCountdown" prepend-icon="mdi-record-circle-outline" class="mb-2">
-                Lancer l'acquisition
-              </v-btn>
+              <v-icon size="52" color="primary" class="mb-4">mdi-folder-upload-outline</v-icon>
+              <div class="drop-title">Déposer la session ici</div>
+              <div class="drop-sub mb-4">ou cliquer pour sélectionner le fichier</div>
+              <div class="d-flex gap-2 justify-center mb-3">
+                <span class="format-chip">
+                  <v-icon size="12">mdi-zip-box</v-icon> ZIP
+                </span>
+                <span class="format-chip format-chip--teal">
+                  <v-icon size="12">mdi-video</v-icon> AVI
+                </span>
+              </div>
+              <div class="drop-sub">Session exportée depuis le protocole d'acquisition · conversion automatique</div>
             </template>
 
-            <v-btn v-if="phase === 'recording'" color="error" block size="large" variant="tonal"
-                   @click="abortRecording" prepend-icon="mdi-stop-circle-outline">
-              Annuler l'enregistrement
-            </v-btn>
-
-            <v-card v-if="phase !== 'idle' && phase !== 'recording'" class="glass-card mt-3">
-              <v-card-text>
-                <div class="status-row">
-                  <v-progress-circular v-if="phase !== 'done' && phase !== 'error'"
-                    indeterminate color="primary" size="22" width="2" class="mr-3" />
-                  <v-icon v-else-if="phase === 'done'" color="success" class="mr-3">mdi-check-circle</v-icon>
-                  <v-icon v-else color="error" class="mr-3">mdi-alert-circle</v-icon>
-                  <span :style="{ color: phase === 'error' ? 'var(--danger)' : phase === 'done' ? 'var(--green)' : 'var(--accent)' }">
-                    {{ statusMessage }}
-                  </span>
+            <template v-else-if="phase !== 'done' && phase !== 'error'">
+              <v-progress-circular indeterminate color="primary" size="48" class="mb-4" />
+              <div class="drop-title" style="color:var(--accent)">{{ statusMessage }}</div>
+              <div v-if="phase === 'uploading' && uploadProgress > 0" class="mt-4" style="width:100%;max-width:300px">
+                <div class="progress-track">
+                  <div class="progress-fill" :style="{ width: uploadProgress + '%' }" />
                 </div>
-                <v-progress-linear v-if="phase === 'uploading' && uploadProgress > 0"
-                  :model-value="uploadProgress" color="primary" class="mt-3" rounded height="6" />
-              </v-card-text>
-            </v-card>
-          </v-col>
-        </v-row>
-      </v-window-item>
+              </div>
+            </template>
 
-      <!-- ── UPLOAD MODE ── -->
-      <v-window-item value="upload">
-        <v-row justify="center">
-          <v-col cols="12" md="7">
-            <!-- Drop zone -->
-            <div
-              class="drop-zone"
-              :class="{ 'drop-zone--active': isDragging, 'drop-zone--disabled': phase !== 'idle' }"
-              @dragover.prevent="isDragging = true"
-              @dragleave="isDragging = false"
-              @drop.prevent="onDrop"
-              @click="phase === 'idle' && fileInput.click()"
-            >
-              <input ref="fileInput" type="file" accept=".zip,.avi" style="display:none"
-                     @change="onFileChange" />
+            <template v-else-if="phase === 'done'">
+              <v-icon size="52" style="color:var(--green)" class="mb-4">mdi-check-circle</v-icon>
+              <div class="drop-title" style="color:var(--green)">Analyse terminée</div>
+            </template>
 
-              <template v-if="phase === 'idle'">
-                <v-icon size="56" color="primary" class="mb-3">mdi-folder-upload-outline</v-icon>
-                <div class="drop-title">Glisse ton fichier ici</div>
-                <div class="drop-sub">ou clique pour choisir</div>
-                <div class="d-flex gap-2 justify-center mt-3">
-                  <v-chip size="small" variant="tonal" color="primary" prepend-icon="mdi-zip-box">ZIP</v-chip>
-                  <v-chip size="small" variant="tonal" color="secondary" prepend-icon="mdi-video">AVI</v-chip>
-                </div>
-                <div class="drop-sub mt-2">ZIP : <code>session/frames/*.png + metadata.json</code></div>
-                <div class="drop-sub">AVI : converti automatiquement côté serveur</div>
-              </template>
-
-              <template v-else-if="phase !== 'done' && phase !== 'error'">
-                <v-progress-circular indeterminate color="primary" size="48" class="mb-3" />
-                <div class="drop-title" style="color:var(--accent)">{{ statusMessage }}</div>
-                <v-progress-linear v-if="phase === 'uploading' && uploadProgress > 0"
-                  :model-value="uploadProgress" color="primary" class="mt-4" rounded height="6"
-                  style="width:100%;max-width:300px" />
-              </template>
-
-              <template v-else-if="phase === 'done'">
-                <v-icon size="56" color="success" class="mb-3">mdi-check-circle</v-icon>
-                <div class="drop-title" style="color:var(--green)">Analyse terminée</div>
-              </template>
-
-              <template v-else>
-                <v-icon size="56" color="error" class="mb-3">mdi-alert-circle</v-icon>
-                <div class="drop-title" style="color:var(--danger)">{{ statusMessage }}</div>
-                <v-btn variant="tonal" color="primary" class="mt-3" @click.stop="resetAcquisition">
-                  Réessayer
-                </v-btn>
-              </template>
-            </div>
-          </v-col>
-        </v-row>
-      </v-window-item>
-    </v-window>
+            <template v-else>
+              <v-icon size="52" style="color:var(--danger)" class="mb-4">mdi-alert-circle</v-icon>
+              <div class="drop-title" style="color:var(--danger)">{{ statusMessage }}</div>
+              <button class="btn-ghost mt-4" @click.stop="resetAcquisition">Réessayer</button>
+            </template>
+          </div>
+        </v-col>
+      </v-row>
+    </template>
 
     <!-- Results -->
     <transition name="slide-up">
       <div v-if="analysisResult" class="mt-6">
-        <v-divider class="mb-5" style="border-color:var(--border)" />
+        <div style="height:1px; background:var(--border); margin-bottom:28px" />
 
         <!-- Quality verdict banner -->
-        <v-card class="glass-card mb-5" :style="{ borderColor: qualityColor + ' !important' }">
-          <v-card-text>
-            <div class="verdict-banner">
-              <v-icon :color="qualityColor" size="52">{{ qualityIcon }}</v-icon>
-              <div class="verdict-text">
-                <div class="verdict-label" :style="{ color: qualityColor }">
-                  Signal {{ analysisResult.quality?.label }}
-                </div>
-                <div class="verdict-sub">
-                  Score qualité :
-                  <strong :style="{ color: qualityColor }">{{ analysisResult.quality?.score?.toFixed(2) }}</strong>
-                  · HR estimée : <strong style="color:var(--warn)">{{ analysisResult.hr?.hr_bpm }} bpm</strong>
-                </div>
-                <div v-if="analysisResult.quality?.recommendations?.length === 0" style="color:var(--green); font-size:0.82rem">
-                  ✓ Aucune recommandation — signal de bonne qualité
-                </div>
-                <div v-for="r in analysisResult.quality?.recommendations" :key="r" class="rec-item">
-                  <v-icon color="warning" size="14">mdi-arrow-right</v-icon> {{ r }}
-                </div>
-              </div>
-              <v-btn
-                color="primary"
-                variant="tonal"
-                :to="`/analysis/${currentSession}`"
-                prepend-icon="mdi-open-in-new"
-                class="ml-auto"
-              >
-                Analyse complète
-              </v-btn>
+        <div class="card-block mb-5" :style="{ borderColor: qualityColor }">
+          <div class="verdict-banner">
+            <div class="verdict-icon" :style="{ background: qualityColor + '18', borderColor: qualityColor + '44' }">
+              <v-icon :style="{ color: qualityColor }" size="28">{{ qualityIcon }}</v-icon>
             </div>
-          </v-card-text>
-        </v-card>
+            <div class="verdict-text">
+              <div class="verdict-label" :style="{ color: qualityColor }">
+                {{ analysisResult.quality?.label }}
+              </div>
+              <div class="verdict-sub">
+                Score qualité : <strong :style="{ color: qualityColor }">{{ analysisResult.quality?.score }}</strong> / 100
+                &nbsp;·&nbsp; FC estimée : <strong style="color:var(--warn)">{{ analysisResult.hr?.hr_bpm }} bpm</strong>
+              </div>
+              <div v-if="!analysisResult.quality?.recommendations?.length" class="verdict-ok">
+                <v-icon size="12" style="color:var(--green)">mdi-check-circle</v-icon>
+                Signal de bonne qualité — aucune recommandation
+              </div>
+              <div v-for="r in analysisResult.quality?.recommendations" :key="r" class="verdict-rec">
+                <v-icon size="12" style="color:var(--warn)">mdi-arrow-right-circle-outline</v-icon> {{ r }}
+              </div>
+            </div>
+            <router-link :to="`/analysis/${currentSession}`" class="btn-ghost btn-ghost--accent ml-auto">
+              <v-icon size="14">mdi-open-in-new</v-icon> Analyse complète
+            </router-link>
+          </div>
+        </div>
 
         <!-- Metric cards -->
-        <v-row class="mb-4">
+        <v-row class="mb-5">
           <v-col v-for="m in resultMetrics" :key="m.label" cols="6" md="3">
             <MetricCard v-bind="m" />
           </v-col>
@@ -266,55 +260,39 @@
         <!-- Signal + FFT -->
         <v-row>
           <v-col cols="12" md="8">
-            <v-card class="glass-card">
-              <v-card-title class="card-title">
-                <v-icon color="primary" class="mr-2">mdi-pulse</v-icon>
-                Signal POS — sinusoïdal ?
-                <v-chip
-                  size="x-small"
-                  :color="analysisResult.tms?.is_clean ? 'success' : 'warning'"
-                  variant="tonal"
-                  class="ml-2"
-                >
-                  {{ analysisResult.tms?.is_clean ? 'Propre ✓' : 'Bruité' }}
-                </v-chip>
-              </v-card-title>
-              <v-card-text>
-                <SignalChart
-                  :time="analysisResult.signal?.time || []"
-                  :raw="analysisResult.signal?.raw || []"
-                  :filtered="analysisResult.signal?.filt || []"
-                  :peaks="analysisResult.signal?.peaks || []"
-                  :hrBpm="analysisResult.hr?.hr_bpm"
-                  :height="200"
-                />
-              </v-card-text>
-            </v-card>
+            <div class="card-block">
+              <div class="card-head">
+                <v-icon size="13" color="#e8622a">mdi-pulse</v-icon>
+                Signal rPPG
+                <span class="head-tag" :style="{ background: analysisResult.tms?.is_clean ? 'rgba(34,212,126,0.1)' : 'rgba(245,158,11,0.1)', color: analysisResult.tms?.is_clean ? 'var(--green)' : 'var(--warn)', borderColor: analysisResult.tms?.is_clean ? 'rgba(34,212,126,0.3)' : 'rgba(245,158,11,0.3)' }">
+                  {{ analysisResult.tms?.is_clean ? 'Morphologie propre' : 'Morphologie irrégulière' }}
+                </span>
+              </div>
+              <div style="padding: 12px 8px 8px">
+                <SignalChart :time="analysisResult.signal?.time||[]" :raw="analysisResult.signal?.raw||[]"
+                  :filtered="analysisResult.signal?.filt||[]" :peaks="analysisResult.signal?.peaks||[]"
+                  :hrBpm="analysisResult.hr?.hr_bpm" :height="200" />
+              </div>
+            </div>
           </v-col>
           <v-col cols="12" md="4">
-            <v-card class="glass-card">
-              <v-card-title class="card-title">
-                <v-icon color="secondary" class="mr-2">mdi-chart-bell-curve</v-icon>
-                Spectre FFT
-              </v-card-title>
-              <v-card-text>
-                <FFTChart
-                  :freq="analysisResult.hr?.freq || []"
-                  :fft="analysisResult.hr?.fft || []"
-                  :hrHz="analysisResult.hr?.hr_hz"
-                  :hrBpm="analysisResult.hr?.hr_bpm"
-                  :height="200"
-                />
-              </v-card-text>
-            </v-card>
+            <div class="card-block">
+              <div class="card-head">
+                <v-icon size="13" color="#06b6d4">mdi-chart-bell-curve</v-icon>
+                Spectre fréquentiel
+              </div>
+              <div style="padding: 12px 8px 8px">
+                <FFTChart :freq="analysisResult.hr?.freq||[]" :fft="analysisResult.hr?.fft||[]"
+                  :hrHz="analysisResult.hr?.hr_hz" :hrBpm="analysisResult.hr?.hr_bpm" :height="200" />
+              </div>
+            </div>
           </v-col>
         </v-row>
 
-        <!-- New acquisition -->
-        <div class="text-center mt-4">
-          <v-btn color="primary" variant="tonal" prepend-icon="mdi-refresh" @click="resetAcquisition">
-            Nouvelle acquisition
-          </v-btn>
+        <div class="text-center mt-5">
+          <button class="btn-ghost" @click="resetAcquisition">
+            <v-icon size="14">mdi-refresh</v-icon> Nouvelle acquisition
+          </button>
         </div>
       </div>
     </transition>
@@ -457,7 +435,7 @@ const progressPct = computed(() => {
 // ── ZIP packaging ─────────────────────────────────────────
 async function packageAndUpload() {
   phase.value      = "packaging";
-  statusMessage.value = "Assemblage du ZIP…";
+  statusMessage.value = "Préparation de la session…";
 
   const now        = new Date();
   const stamp      = now.toISOString().replace(/[-:T]/g, "").slice(0, 15);
@@ -532,7 +510,7 @@ async function handleZipFile(file) {
 // ── Upload ────────────────────────────────────────────────
 async function uploadSession(sessionName, zipBlob) {
   phase.value          = "uploading";
-  statusMessage.value  = "Upload vers le serveur…";
+  statusMessage.value  = "Transfert en cours…";
   uploadProgress.value = 0;
 
   const filename = sessionName ? `${sessionName}.zip` : zipBlob.name || "session.zip";
@@ -560,7 +538,7 @@ async function uploadSession(sessionName, zipBlob) {
 // ── Analysis ──────────────────────────────────────────────
 async function submitAnalysis(sessionName) {
   phase.value         = "analyzing";
-  statusMessage.value = "Analyse POS en cours…";
+  statusMessage.value = "Analyse ST-rPPG en cours…";
 
   try {
     const { data: jobData } = await axios.post(
@@ -639,6 +617,7 @@ function resetAcquisition() {
 // ── Computed ──────────────────────────────────────────────
 const qualityColor = computed(() => {
   const label = analysisResult.value?.quality?.label?.toUpperCase() || "";
+  if (label === "EXCELLENT") return "var(--green)";
   if (label === "GOOD")      return "var(--green)";
   if (label === "POOR")      return "var(--warn)";
   if (label === "BAD")       return "var(--danger)";
@@ -647,9 +626,10 @@ const qualityColor = computed(() => {
 
 const qualityIcon = computed(() => {
   const label = analysisResult.value?.quality?.label?.toUpperCase() || "";
-  if (label === "GOOD")  return "mdi-check-circle";
-  if (label === "POOR")  return "mdi-alert-circle";
-  if (label === "BAD")   return "mdi-close-circle";
+  if (label === "EXCELLENT") return "mdi-check-circle";
+  if (label === "GOOD")      return "mdi-check-circle";
+  if (label === "POOR")      return "mdi-alert-circle";
+  if (label === "BAD")       return "mdi-close-circle";
   return "mdi-help-circle";
 });
 
@@ -675,215 +655,111 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 24px;
-  gap: 16px;
+/* ── Tabs ──────────────────────────────────────────────── */
+.acq-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
+.acq-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 18px; border-radius: 8px 8px 0 0;
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  color: var(--muted); font-size: 0.8rem; font-weight: 600;
+  cursor: pointer; transition: all 0.15s; margin-bottom: -1px;
+  text-transform: uppercase; letter-spacing: 0.5px;
 }
-.page-title {
-  font-size: 1.3rem;
-  font-weight: 700;
-  color: var(--text);
-  display: flex;
-  align-items: center;
-  margin: 0 0 4px;
-}
-.page-sub {
-  font-size: 0.8rem;
-  color: var(--muted);
-  margin: 0;
-}
-.card-title {
-  font-size: 0.88rem !important;
-  font-weight: 600;
-  padding: 14px 16px 10px;
-  display: flex;
-  align-items: center;
+.acq-tab:hover { color: var(--text2); }
+.acq-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.acq-tab:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Done badge ─────────────────────────────────────────── */
+.done-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.78rem; font-weight: 600; color: var(--green);
+  background: rgba(34,212,126,0.1); border: 1px solid rgba(34,212,126,0.25);
+  border-radius: 8px; padding: 6px 14px;
 }
 
-/* Camera */
-.camera-wrapper {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 4/3;
-  background: #0a0e14;
-  overflow: hidden;
-}
-.camera-video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
+/* ── Camera ─────────────────────────────────────────────── */
+.camera-wrapper { position: relative; width: 100%; aspect-ratio: 4/3; background: #070c14; overflow: hidden; }
+.camera-video   { width: 100%; height: 100%; object-fit: cover; display: block; }
 .camera-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: rgba(10, 14, 20, 0.85);
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(7,7,12,0.88);
 }
-
-/* REC badge */
 .rec-badge {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  background: rgba(248, 81, 73, 0.9);
-  color: #fff;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 1px;
-  padding: 3px 10px;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  position: absolute; top: 12px; left: 12px;
+  background: rgba(248,81,73,0.9); color: #fff;
+  font-size: 0.75rem; font-weight: 700; letter-spacing: 1px;
+  padding: 3px 10px; border-radius: 4px;
+  display: flex; align-items: center; gap: 6px;
 }
-
-/* Countdown */
 .countdown-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
-  font-size: 7rem;
-  font-weight: 900;
-  color: #fff;
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.6);
+  font-size: 7rem; font-weight: 900; color: #fff;
   text-shadow: 0 0 40px var(--accent);
 }
+.video-progress { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(255,255,255,0.08); }
+.video-progress-fill { height: 100%; background: var(--accent); transition: width 0.1s linear; box-shadow: 0 0 8px var(--accent); }
+.frame-bar { display: flex; align-items: center; gap: 6px; padding: 8px 14px; font-size: 0.8rem; color: var(--text); border-top: 1px solid var(--border); }
+.frame-count { color: var(--accent); font-weight: 700; }
 
-/* Recording progress bar */
-.video-progress {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.1);
-}
-.video-progress-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.1s linear;
-  box-shadow: 0 0 8px var(--accent);
-}
+/* ── Params ─────────────────────────────────────────────── */
+.param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.param-item { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; }
+.param-label { font-size: 0.67rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+.param-value { font-size: 0.95rem; font-weight: 800; color: var(--accent); }
 
-/* Frame bar below video */
-.frame-bar {
-  display: flex;
-  align-items: center;
-  padding: 8px 14px;
-  font-size: 0.82rem;
-  color: var(--text);
-  border-top: 1px solid var(--border);
+/* ── Stop button ────────────────────────────────────────── */
+.btn-stop {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 14px 18px; border-radius: 8px;
+  background: rgba(248,81,73,0.1); color: var(--danger);
+  border: 1px solid rgba(248,81,73,0.3);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer; transition: opacity 0.15s;
 }
-.frame-count {
-  color: var(--accent);
-  font-weight: 700;
-  font-size: 0.95rem;
-}
+.btn-stop:hover { opacity: 0.82; }
 
-/* Params grid */
-.param-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.param-item {
-  background: rgba(255,255,255,0.04);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 14px;
-}
-.param-label {
-  font-size: 0.72rem;
-  color: var(--muted);
-  margin-bottom: 2px;
-}
-.param-value {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--accent);
-}
+/* ── Progress bar ───────────────────────────────────────── */
+.progress-track { height: 4px; background: var(--surface3); border-radius: 3px; overflow: hidden; }
+.progress-fill  { height: 100%; background: var(--accent); transition: width 0.3s ease; border-radius: 3px; }
 
-/* Status */
-.status-row {
-  display: flex;
-  align-items: center;
-  font-size: 0.88rem;
-}
+/* ── Status row ─────────────────────────────────────────── */
+.status-row { display: flex; align-items: center; }
 
-/* Verdict banner */
-.verdict-banner {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  flex-wrap: wrap;
-}
+/* ── Verdict banner ─────────────────────────────────────── */
+.verdict-banner { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 20px 22px; }
+.verdict-icon { width: 52px; height: 52px; border-radius: 12px; border: 1px solid; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .verdict-text { flex: 1; min-width: 180px; }
-.verdict-label {
-  font-size: 1.6rem;
-  font-weight: 800;
-  line-height: 1.2;
-}
-.verdict-sub {
-  font-size: 0.85rem;
-  color: var(--muted);
-  margin: 4px 0 6px;
-}
-.rec-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.8rem;
-  color: var(--warn);
-  padding: 2px 0;
+.verdict-label { font-size: 1.4rem; font-weight: 800; line-height: 1.2; }
+.verdict-sub { font-size: 0.83rem; color: var(--muted); margin: 4px 0 6px; }
+.verdict-ok  { display: flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--green); }
+.verdict-rec { display: flex; align-items: center; gap: 5px; font-size: 0.78rem; color: var(--warn); padding: 1px 0; }
+.btn-ghost--accent { color: var(--accent) !important; border-color: rgba(232,98,42,0.3) !important; }
+.btn-ghost--accent:hover { background: rgba(232,98,42,0.08) !important; border-color: var(--accent) !important; }
+.head-tag {
+  margin-left: auto; font-size: 0.68rem; font-weight: 700;
+  padding: 2px 10px; border-radius: 5px; border: 1px solid;
+  text-transform: none; letter-spacing: 0;
 }
 
-/* Drop zone */
+/* ── Drop zone ──────────────────────────────────────────── */
 .drop-zone {
-  border: 2px dashed var(--border);
-  border-radius: 16px;
-  padding: 56px 24px;
-  text-align: center;
-  cursor: pointer;
+  border: 1px dashed var(--border2); border-radius: 14px; padding: 64px 24px;
+  text-align: center; cursor: pointer;
   transition: border-color 0.2s, background 0.2s;
-  background: rgba(255,255,255,0.02);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  background: var(--surface2);
+  display: flex; flex-direction: column; align-items: center;
 }
-.drop-zone:hover:not(.drop-zone--disabled) {
-  border-color: var(--accent);
-  background: rgba(0, 200, 255, 0.04);
+.drop-zone:hover:not(.drop-zone--disabled) { border-color: var(--accent); background: rgba(232,98,42,0.04); }
+.drop-zone--active   { border-color: var(--accent) !important; background: rgba(232,98,42,0.07) !important; }
+.drop-zone--disabled { cursor: default; }
+.drop-title { font-size: 1.1rem; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.drop-sub   { font-size: 0.8rem; color: var(--muted); }
+.format-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 12px; border-radius: 6px; font-size: 0.75rem; font-weight: 700;
+  background: rgba(232,98,42,0.1); color: var(--accent); border: 1px solid rgba(232,98,42,0.25);
 }
-.drop-zone--active {
-  border-color: var(--accent) !important;
-  background: rgba(0, 200, 255, 0.08) !important;
-}
-.drop-zone--disabled {
-  cursor: default;
-}
-.drop-title {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 6px;
-}
-.drop-sub {
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-.drop-sub code {
-  background: rgba(255,255,255,0.06);
-  border-radius: 4px;
-  padding: 1px 6px;
-  font-size: 0.75rem;
-}
+.format-chip--teal { background: rgba(6,182,212,0.1); color: var(--teal); border-color: rgba(6,182,212,0.25); }
 </style>

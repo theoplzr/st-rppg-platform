@@ -2,7 +2,8 @@
 core/pos_algorithm.py
 ─────────────────────
 POS (Plane-Orthogonal-to-Skin) rPPG algorithm.
-Reference: de Haan & Jeanne, IEEE TBME 2013.
+Reference: Wang et al., IEEE TBME 2017. DOI: 10.1109/TBME.2016.2610512
+Projection matrix: [[0, 1, -1], [-2, 1, 1]] — Eq. (4) of the paper.
 Input  : temporal RGB signal (N, 3)
 Output : rPPG signal (N,)
 """

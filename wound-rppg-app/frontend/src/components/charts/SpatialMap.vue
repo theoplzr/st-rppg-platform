@@ -81,9 +81,10 @@ const currentMap = computed(() => props.maps[activeTab.value]);
 }
 .map-tab:hover  { border-color: var(--accent); color: var(--text); }
 .map-tab.active {
-  background: rgba(0,200,255,0.1);
+  background: rgba(232,98,42,0.1);
   border-color: var(--accent);
   color: var(--accent);
+  font-weight: 600;
 }
 .map-container {
   width: 100%;

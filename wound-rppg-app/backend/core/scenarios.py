@@ -5,6 +5,7 @@ from pathlib import Path
 from .pos_algorithm import pos_algorithm, bandpass_filter, spatial_average
 from .signal_quality import full_quality_report
 from .spatial_maps import compute_all_maps, maps_to_base64_dict, roi_stats
+from .ai_interpretation import interpret_results
 from .session_manager import (
     load_session,
     load_results,
@@ -74,6 +75,7 @@ def analyze_session(session_name: str, sessions_root: Path = None, force: bool =
     maps = compute_all_maps(frames, fps, hr_hz)
     maps_b64 = maps_to_base64_dict(maps, size=(256, 256))
 
+    amp_stats = roi_stats(maps["amplitude"])
     results = {
         "session_name": session_name,
         "meta": meta,
@@ -81,7 +83,8 @@ def analyze_session(session_name: str, sessions_root: Path = None, force: bool =
         "n_frames": len(frames),
         **report,
         "maps": maps_b64,
-        "amp_stats": roi_stats(maps["amplitude"]),
+        "amp_stats": amp_stats,
+        "interpretation": interpret_results({**report, "amp_stats": amp_stats}),
     }
 
     save_results(session_name, results, sessions_root=root)
@@ -148,20 +151,3 @@ def analyze_roi(
     return report
 
 
-def compare_rois(
-    session_name: str,
-    roi_wound: tuple,
-    roi_periwound: tuple,
-    sessions_root: Path = None,
-) -> dict:
-    wound = analyze_roi(session_name, roi_wound, "wound", sessions_root)
-    periwound = analyze_roi(session_name, roi_periwound, "periwound", sessions_root)
-
-    amp_w = wound.get("snr", {}).get("mean_snr", 0)
-    amp_pw = periwound.get("snr", {}).get("mean_snr", 0)
-
-    return {
-        "wound": wound,
-        "periwound": periwound,
-        "ratio": round(amp_w / (amp_pw + 1e-8), 3),
-    }

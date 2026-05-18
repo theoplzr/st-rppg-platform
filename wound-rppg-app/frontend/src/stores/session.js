@@ -10,8 +10,6 @@ export const useSessionStore = defineStore("session", () => {
   const currentResult = ref(null);
 
   const hasSessions  = computed(() => sessions.value.length > 0);
-  const analyzed     = computed(() =>
-    sessions.value.filter(s => s.has_results));
 
   async function fetchSessions() {
     loading.value = true;
@@ -72,7 +70,7 @@ export const useSessionStore = defineStore("session", () => {
 
   return {
     sessions, loading, current, currentResult,
-    hasSessions, analyzed,
+    hasSessions,
     fetchSessions, analyze, getResult, tagScenario,
   };
 });

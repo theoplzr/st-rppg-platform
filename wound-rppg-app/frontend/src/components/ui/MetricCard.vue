@@ -1,27 +1,18 @@
 <template>
-  <v-card class="glass-card metric-card" :style="{ borderColor: color + '44' }">
-    <div class="metric-inner">
-      <div class="metric-icon" :style="{ background: color + '22', color }">
-        <v-icon :icon="icon" size="20" />
-      </div>
-      <div class="metric-content">
-        <div class="metric-label">{{ label }}</div>
-        <div class="metric-value" :style="{ color }">
-          {{ value }}
-          <span v-if="unit" class="metric-unit">{{ unit }}</span>
-        </div>
-        <div v-if="sub" class="metric-sub">{{ sub }}</div>
+  <div class="metric-card" :style="{ '--c': color }">
+    <!-- Ambient glow from the color -->
+    <div class="metric-glow" />
+    <div class="metric-top">
+      <div class="metric-icon">
+        <v-icon :icon="icon" size="16" :style="{ color }" />
       </div>
     </div>
-    <div v-if="trend !== undefined" class="metric-trend">
-      <v-icon :color="trend >= 0 ? 'success' : 'error'" size="14">
-        {{ trend >= 0 ? "mdi-trending-up" : "mdi-trending-down" }}
-      </v-icon>
-      <span :style="{ color: trend >= 0 ? 'var(--green)' : 'var(--danger)' }">
-        {{ Math.abs(trend) }}
-      </span>
+    <div class="metric-value" :style="{ color }">
+      {{ value }}<span v-if="unit" class="metric-unit">{{ unit }}</span>
     </div>
-  </v-card>
+    <div class="metric-label">{{ label }}</div>
+    <div class="metric-bar" :style="{ background: color }" />
+  </div>
 </template>
 
 <script setup>
@@ -29,64 +20,82 @@ defineProps({
   label: String,
   value: [String, Number],
   unit:  String,
-  sub:   String,
   icon:  { type: String, default: "mdi-chart-line" },
   color: { type: String, default: "var(--accent)" },
-  trend: Number,
 });
 </script>
 
 <style scoped>
 .metric-card {
-  padding: 16px;
-  transition: transform 0.2s, box-shadow 0.2s;
+  background: #080810;
+  border: 1px solid #1a1a2e;
+  border-radius: 16px;
+  padding: 20px 22px 16px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.25s, box-shadow 0.25s, transform 0.15s;
+  cursor: default;
 }
 .metric-card:hover {
+  border-color: color-mix(in srgb, var(--c, #e8622a) 35%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--c, #e8622a) 10%, transparent),
+              0 12px 32px rgba(0,0,0,0.5);
   transform: translateY(-2px);
-  box-shadow: 0 8px 32px rgba(0, 200, 255, 0.1) !important;
 }
-.metric-inner {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+
+/* Ambient glow from the accent color */
+.metric-glow {
+  position: absolute;
+  top: -30px;
+  right: -20px;
+  width: 100px;
+  height: 100px;
+  background: radial-gradient(ellipse, color-mix(in srgb, var(--c, #e8622a) 20%, transparent) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.metric-top {
+  margin-bottom: 16px;
 }
 .metric-icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--c, #e8622a) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c, #e8622a) 20%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-}
-.metric-label {
-  font-size: 0.75rem;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  margin-bottom: 2px;
 }
 .metric-value {
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-family: 'Syne', 'Inter', sans-serif;
+  font-size: 2rem;
+  font-weight: 800;
   line-height: 1;
+  margin-bottom: 7px;
+  letter-spacing: -0.04em;
 }
 .metric-unit {
-  font-size: 0.85rem;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
   font-weight: 400;
-  margin-left: 3px;
+  margin-left: 4px;
   color: var(--muted);
+  letter-spacing: 0;
 }
-.metric-sub {
-  font-size: 0.72rem;
+.metric-label {
+  font-size: 0.65rem;
+  font-weight: 700;
   color: var(--muted);
-  margin-top: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
-.metric-trend {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 0.75rem;
-  margin-top: 8px;
+.metric-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  opacity: 0.5;
 }
 </style>

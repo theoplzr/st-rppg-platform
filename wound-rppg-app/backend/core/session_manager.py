@@ -186,19 +186,3 @@ def save_scenario(
         json.dump(scenario, f, indent=2)
 
 
-def load_multiple_sessions(
-    session_names: list,
-    sessions_root: Path = None,
-) -> list:
-    """Load several sessions for batch comparison."""
-    root = sessions_root or SESSIONS_DIR
-    loaded = []
-
-    for name in session_names:
-        try:
-            frames, meta = load_session(name, sessions_root=root)
-            loaded.append({"name": name, "frames": frames, "meta": meta})
-        except Exception as exc:
-            loaded.append({"name": name, "error": str(exc)})
-
-    return loaded

@@ -1,8 +1,15 @@
-"""api/routes_upload.py — Session upload endpoint (ZIP)."""
+"""api/routes_upload.py — Session upload endpoint (ZIP or AVI)."""
+import json
 import logging
 import os
+import re
+import shutil
+import tempfile
 import zipfile
+from datetime import datetime
+from pathlib import Path
 
+import cv2
 from flask import Blueprint, jsonify, request
 from core.session_manager import SESSIONS_DIR
 
@@ -70,6 +77,64 @@ def _handle_zip(f) -> tuple:
     return jsonify({"ok": True, "sessions": sessions, "size_mb": round(size_mb, 1)}), 201
 
 
+# ── AVI upload ─────────────────────────────────────────────────────────────────
+
+def _handle_avi(f, filename: str) -> tuple:
+    stem = re.sub(r"[^\w\-]", "_", Path(filename).stem)
+    session_name = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    session_dir = SESSIONS_DIR / session_name
+    frames_dir  = session_dir / "frames"
+    tmp_path    = None
+
+    try:
+        # Stream AVI to a temp file (may be several GB — avoid loading into RAM)
+        with tempfile.NamedTemporaryFile(suffix=".avi", delete=False) as tmp:
+            tmp_path = tmp.name
+            shutil.copyfileobj(f.stream, tmp)
+
+        cap = cv2.VideoCapture(tmp_path)
+        if not cap.isOpened():
+            return jsonify({"error": "Cannot open AVI file — file may be corrupt."}), 400
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+        idx = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            cv2.imwrite(str(frames_dir / f"frame_{idx:05d}.png"), frame)
+            idx += 1
+        cap.release()
+
+        if idx == 0:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            return jsonify({"error": "AVI contains no readable frames."}), 422
+
+        meta = {
+            "session_name": session_name,
+            "measured_fps": round(fps, 3),
+            "nb_frames":    idx,
+            "date":         datetime.now().isoformat(),
+            "source":       "avi",
+        }
+        (session_dir / "metadata.json").write_text(json.dumps(meta, indent=2))
+
+        size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
+        log.info("AVI converted: %s — %d frames @ %.1f fps (%.1f MB)", session_name, idx, fps, size_mb)
+        return jsonify({"ok": True, "sessions": [session_name], "size_mb": round(size_mb, 1)}), 201
+
+    except Exception:
+        log.exception("AVI conversion failed")
+        shutil.rmtree(session_dir, ignore_errors=True)
+        return jsonify({"error": "AVI conversion failed. Check server logs."}), 500
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
 # ── Route ──────────────────────────────────────────────────────────────────────
 
 @bp_upload.route("/", methods=["POST", "OPTIONS"])
@@ -87,10 +152,6 @@ def upload_session():
         return _handle_zip(f)
 
     if name.endswith(".avi"):
-        return jsonify({
-            "error": "AVI upload is not supported on this server (memory limits). "
-                     "Convert your AVI locally with scripts/avi_to_session_zip.py, "
-                     "then upload the resulting ZIP."
-        }), 415
+        return _handle_avi(f, f.filename)
 
-    return jsonify({"error": "Only .zip files are accepted."}), 400
+    return jsonify({"error": "Only .zip and .avi files are accepted."}), 400

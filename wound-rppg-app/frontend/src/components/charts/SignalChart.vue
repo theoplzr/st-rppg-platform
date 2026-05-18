@@ -1,101 +1,90 @@
 <template>
-  <v-chart
-    :option="option"
-    :style="{ height: height + 'px', width: '100%' }"
-    autoresize
-  />
+  <v-chart :option="option" :style="{ height: height + 'px', width: '100%' }" autoresize />
 </template>
 
 <script setup>
 import { computed } from "vue";
 
 const props = defineProps({
-  time:       { type: Array, default: () => [] },
-  raw:        { type: Array, default: () => [] },
-  filtered:   { type: Array, default: () => [] },
-  peaks:      { type: Array, default: () => [] },
-  hrBpm:      Number,
-  height:     { type: Number, default: 250 },
+  time:     { type: Array, default: () => [] },
+  raw:      { type: Array, default: () => [] },
+  filtered: { type: Array, default: () => [] },
+  peaks:    { type: Array, default: () => [] },
+  hrBpm:    Number,
+  height:   { type: Number, default: 250 },
 });
 
-const option = computed(() => {
-  const peakData = props.peaks.map(i => ({
-    coord: [props.time[i], props.filtered[i]],
-  }));
-
-  return {
-    backgroundColor: "transparent",
-    grid: { top: 36, right: 20, bottom: 40, left: 52 },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "#161b22",
-      borderColor: "#30363d",
-      textStyle: { color: "#e6edf3", fontSize: 11 },
-      formatter: (params) => {
-        const t = params[0]?.axisValue?.toFixed(2);
-        return params.map(p =>
-          `<span style="color:${p.color}">●</span> ${p.seriesName}: ${p.value?.toFixed(3)}`
-        ).join("<br/>") + `<br/>t = ${t}s`;
-      },
+const option = computed(() => ({
+  backgroundColor: "transparent",
+  grid: { top: 32, right: 16, bottom: 36, left: 48 },
+  tooltip: {
+    trigger: "axis",
+    backgroundColor: "#0f0f17",
+    borderColor: "#252535",
+    textStyle: { color: "#c8c8d8", fontSize: 11 },
+    formatter: (params) => {
+      const t = params[0]?.axisValue?.toFixed(2);
+      return params.map(p =>
+        `<span style="color:${p.color}">●</span> ${p.seriesName}: ${p.value?.toFixed(3)}`
+      ).join("<br/>") + `<br/>t = ${t}s`;
     },
-    legend: {
-      data: ["POS brut", "POS filtré"],
-      textStyle: { color: "#8b949e", fontSize: 11 },
-      top: 4,
+  },
+  legend: {
+    data: ["POS brut", "POS filtré"],
+    textStyle: { color: "#6b6b85", fontSize: 11 },
+    top: 2,
+  },
+  xAxis: {
+    type: "category",
+    data: props.time.map(t => t.toFixed(1)),
+    axisLine:  { lineStyle: { color: "#252535" } },
+    axisTick:  { show: false },
+    axisLabel: { color: "#6b6b85", fontSize: 10, interval: Math.floor(props.time.length / 8) },
+    name: "t (s)",
+    nameTextStyle: { color: "#6b6b85", fontSize: 10 },
+    nameLocation: "end",
+  },
+  yAxis: {
+    type: "value",
+    axisLine: { show: false },
+    axisTick: { show: false },
+    splitLine: { lineStyle: { color: "#16161f" } },
+    axisLabel: { color: "#6b6b85", fontSize: 10 },
+  },
+  series: [
+    {
+      name: "POS brut",
+      type: "line",
+      data: props.raw,
+      lineStyle: { color: "#2e2e42", width: 1 },
+      symbol: "none",
     },
-    xAxis: {
-      type: "category",
-      data: props.time.map(t => t.toFixed(1)),
-      axisLine:  { lineStyle: { color: "#30363d" } },
-      axisTick:  { show: false },
-      axisLabel: { color: "#8b949e", fontSize: 10, interval: Math.floor(props.time.length / 8) },
-      name: "Temps (s)",
-      nameTextStyle: { color: "#8b949e", fontSize: 10 },
-      nameLocation: "end",
-    },
-    yAxis: {
-      type: "value",
-      axisLine:  { show: false },
-      axisTick:  { show: false },
-      splitLine: { lineStyle: { color: "#21262d" } },
-      axisLabel: { color: "#8b949e", fontSize: 10 },
-      name: "Amplitude",
-      nameTextStyle: { color: "#8b949e", fontSize: 10 },
-    },
-    series: [
-      {
-        name: "POS brut",
-        type: "line",
-        data: props.raw,
-        lineStyle: { color: "#8b949e", width: 0.8, opacity: 0.5 },
-        symbol: "none",
-        smooth: false,
-      },
-      {
-        name: "POS filtré",
-        type: "line",
-        data: props.filtered,
-        lineStyle: { color: "#00c8ff", width: 2 },
-        areaStyle: {
-          color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: "rgba(0,200,255,0.15)" },
-              { offset: 1, color: "rgba(0,200,255,0)" },
-            ]},
-        },
-        symbol: "none",
-        smooth: true,
-        markPoint: {
-          data: peakData.map(p => ({
-            coord: p.coord,
-            symbol: "circle",
-            symbolSize: 8,
-            itemStyle: { color: "#f0883e" },
-          })),
-          tooltip: { show: false },
+    {
+      name: "POS filtré",
+      type: "line",
+      data: props.filtered,
+      lineStyle: { color: "#e8622a", width: 2 },
+      areaStyle: {
+        color: {
+          type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: "rgba(232,98,42,0.18)" },
+            { offset: 1, color: "rgba(232,98,42,0)" },
+          ],
         },
       },
-    ],
-  };
-});
+      symbol: "none",
+      smooth: true,
+      markPoint: {
+        data: props.peaks.map(i => ({
+          coord: [props.time[i], props.filtered[i]],
+          symbol: "circle",
+          symbolSize: 7,
+          itemStyle: { color: "#f59e0b" },
+        })),
+        tooltip: { show: false },
+      },
+    },
+  ],
+}));
 </script>

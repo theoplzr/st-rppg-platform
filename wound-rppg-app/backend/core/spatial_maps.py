@@ -80,35 +80,6 @@ def _coherence_from_green(frames: np.ndarray) -> np.ndarray:
     return np.clip(np.abs(coh), 0, 1)
 
 
-# ─── Public standalone functions ───────────────────────────────────────────────
-
-def amplitude_map(frames: np.ndarray, fps: float,
-                  hr_hz: float, bw: float = 0.15) -> np.ndarray:
-    """Pixel-wise rPPG amplitude map from the green channel."""
-    _, fft_p, freq = _green_fft(frames, fps)
-    return _amplitude_from_fft(fft_p, freq, hr_hz, bw)
-
-
-def phase_map(frames: np.ndarray, fps: float,
-              hr_hz: float, bw: float = 0.15) -> np.ndarray:
-    """Phase map in radians [-π, π], centered on the spatial median."""
-    fft_c, _, freq = _green_fft(frames, fps)
-    return _phase_from_fft(fft_c, freq, hr_hz, bw)
-
-
-def snr_map(frames: np.ndarray, fps: float,
-            hr_hz: float, bw: float = 0.15) -> np.ndarray:
-    """Pixel-wise SNR map (dB)."""
-    _, fft_p, freq = _green_fft(frames, fps)
-    return _snr_from_fft(fft_p, freq, hr_hz, bw)
-
-
-def coherence_map(frames: np.ndarray, fps: float,
-                  hr_hz: float) -> np.ndarray:
-    """Coherence map [0, 1] — vectorized implementation."""
-    return _coherence_from_green(frames)
-
-
 # ─── All maps in a single FFT pass ────────────────────────────────────────────
 
 def compute_all_maps(frames: np.ndarray, fps: float,

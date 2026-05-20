@@ -61,38 +61,48 @@ def _snr_from_fft(fft_power: np.ndarray, freq: np.ndarray,
     return 10 * np.log10(p_sig / (p_noise + 1e-12))
 
 
-def _coherence_from_green(frames: np.ndarray) -> np.ndarray:
+def _coherence_from_pos(frames: np.ndarray, fps: float,
+                        ref_signal: np.ndarray = None) -> np.ndarray:
     """
-    Vectorized coherence map: Pearson correlation of each pixel with the
-    spatial mean reference signal.
+    POS-based coherence map: Pearson correlation of each pixel's per-pixel POS
+    signal (pos_local) against the global POS reference signal.
     """
-    green = frames[:, :, :, 1].astype(np.float32)
-    N     = green.shape[0]
+    from .pos_algorithm import pos_local
 
-    ref     = green.mean(axis=(1, 2))                          # (N,)
-    ref    -= ref.mean()
+    pos_maps = pos_local(frames, fps)           # (N, H, W) Hilbert-normalised
+    N, H, W  = pos_maps.shape
+
+    if ref_signal is not None:
+        ref = np.asarray(ref_signal, dtype=np.float32)[:N]
+    else:
+        ref = pos_maps.mean(axis=(1, 2))
+
+    ref     = ref - ref.mean()
     ref_std = ref.std() + 1e-8
 
-    green_c = green - green.mean(axis=0, keepdims=True)
-    px_std  = green_c.std(axis=0) + 1e-8                      # (H, W)
+    pos_c  = pos_maps - pos_maps.mean(axis=0, keepdims=True)  # (N, H, W)
+    px_std = pos_c.std(axis=0) + 1e-8                         # (H, W)
 
-    coh = np.tensordot(ref, green_c, axes=[[0], [0]]) / (N * ref_std * px_std)
+    coh = np.tensordot(ref, pos_c.reshape(N, -1), axes=[[0], [0]])
+    coh = coh.reshape(H, W) / (N * ref_std * px_std)
     return np.clip(np.abs(coh), 0, 1)
 
 
 # ─── All maps in a single FFT pass ────────────────────────────────────────────
 
 def compute_all_maps(frames: np.ndarray, fps: float,
-                     hr_hz: float) -> dict:
+                     hr_hz: float,
+                     filt_signal: np.ndarray = None) -> dict:
     """
-    Compute all ST-rPPG spatial maps in a single FFT pass.
+    Compute all ST-rPPG spatial maps.
+    filt_signal: global pos_signal output used as coherence reference.
     """
     fft_c, fft_p, freq = _green_fft(frames, fps)
 
     amp   = _amplitude_from_fft(fft_p, freq, hr_hz)
     phase = _phase_from_fft(fft_c, freq, hr_hz)
     snr   = _snr_from_fft(fft_p, freq, hr_hz)
-    coh   = _coherence_from_green(frames)
+    coh   = _coherence_from_pos(frames, fps, ref_signal=filt_signal)
 
     return {
         "amplitude": amp,

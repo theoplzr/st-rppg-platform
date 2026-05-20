@@ -1,5 +1,6 @@
 """api/routes_analysis.py"""
 import logging
+import numpy as np
 from flask import Blueprint, jsonify, request
 from core.scenarios import analyze_session, analyze_roi
 from core.job_queue import submit, get_job
@@ -54,6 +55,51 @@ def get_analysis(session_name):
         return jsonify(results)
     except FileNotFoundError:
         return jsonify({"error": "No results found. Run analysis first."}), 404
+
+
+@bp_analysis.post("/<session_name>/pixel_pos")
+def pixel_pos(session_name):
+    """
+    Return global POS signal vs local (per-pixel) POS for a clicked map position.
+    Body: { nx: float [0,1], ny: float [0,1] }
+    """
+    err = reject_invalid_session(session_name)
+    if err:
+        return err
+    data = request.json or {}
+    nx = float(data.get("nx", 0.5))
+    ny = float(data.get("ny", 0.5))
+    try:
+        from core.session_manager import load_session, load_results
+        from core.pos_algorithm import pos_signal
+        from core.scenarios import _ANALYSIS_RESIZE
+
+        frames, meta = load_session(session_name, resize=_ANALYSIS_RESIZE)
+        fps  = float(meta.get("measured_fps", 30))
+        N, H, W, _ = frames.shape
+
+        px = int(np.clip(nx * W, 0, W - 1))
+        py = int(np.clip(ny * H, 0, H - 1))
+
+        pixel_rgb = frames[:, py, px, :]            # (N, 3)
+        local_sig = pos_signal(pixel_rgb, fps)
+
+        results    = load_results(session_name)
+        global_sig = results.get("signal", {}).get("filt", [])
+        time_axis  = results.get("signal", {}).get("time", [])
+
+        return jsonify({
+            "local":  local_sig.tolist(),
+            "global": global_sig,
+            "time":   time_axis,
+            "pixel":  {"x": px, "y": py, "nx": round(nx, 3), "ny": round(ny, 3)},
+            "fps":    fps,
+        })
+    except FileNotFoundError:
+        return jsonify({"error": "Session not analyzed yet — run analysis first."}), 404
+    except Exception:
+        log.exception("pixel_pos failed session=%s", session_name)
+        return jsonify(_ERR_500), 500
 
 
 @bp_analysis.post("/<session_name>/roi")

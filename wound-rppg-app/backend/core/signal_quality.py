@@ -105,32 +105,42 @@ def compute_snr_sliding(signal: np.ndarray, fps: float,
 def compute_tms(signal: np.ndarray, fps: float,
                 hr_hz: float) -> dict:
     """
-    Template Matching Score (TMS): measures morphological consistency of PPG cycles.
-    Each cycle is resampled to 100 points and correlated with the mean template.
-    Returns tms in [0, 1] and is_clean flag (threshold: 0.96).
+    Template Matching Score (TMS): morphological consistency of PPG cycles.
+    Cycles are segmented between consecutive detected peaks (avoids integer
+    cycle-length drift). Each cycle is resampled to 100 pts then Pearson-
+    correlated with the mean template.
     """
     if hr_hz is None or hr_hz <= 0:
         return {"tms": 0.0, "is_clean": False, "n_cycles": 0}
 
-    cycle_len = int(fps / hr_hz)
-    if cycle_len < 3:
-        return {"tms": 0.0, "is_clean": False, "n_cycles": 0}
+    # Expected samples between peaks ± 40% tolerance
+    expected = fps / hr_hz
+    min_dist = int(expected * 0.60)
+
+    peaks, _ = find_peaks(signal, distance=min_dist, height=0)
+    if len(peaks) < 3:
+        # Fallback: uniform segmentation with float step (no drift)
+        step = fps / hr_hz                       # exact float step
+        starts = np.arange(0, len(signal) - step, step)
+        peaks_fb = np.round(starts).astype(int)
+        peaks = peaks_fb[peaks_fb + int(step) < len(signal)]
+        if len(peaks) < 2:
+            return {"tms": 0.0, "is_clean": False, "n_cycles": 0}
 
     n_points = 100
     cycles = []
-
-    for start in range(0, len(signal) - cycle_len, cycle_len):
-        cycle = signal[start: start + cycle_len]
-        # Resample to n_points via linear interpolation
-        x_old = np.linspace(0, 1, len(cycle))
+    for i in range(len(peaks) - 1):
+        seg = signal[peaks[i]: peaks[i + 1]]
+        if len(seg) < 4:
+            continue
+        x_old = np.linspace(0, 1, len(seg))
         x_new = np.linspace(0, 1, n_points)
-        cycle_resampled = np.interp(x_new, x_old, cycle)
-        cycles.append(cycle_resampled)
+        cycles.append(np.interp(x_new, x_old, seg))
 
     if len(cycles) < 2:
         return {"tms": 0.0, "is_clean": False, "n_cycles": 0}
 
-    cycles = np.array(cycles)
+    cycles   = np.array(cycles)
     template = cycles.mean(axis=0)
 
     correlations = []
@@ -158,11 +168,12 @@ def quality_score(mean_snr: float, tms: float, fps: float) -> dict:
     Composite quality score (0–100) combining SNR, TMS, and frame rate.
     Returns label, color, score, and actionable recommendations.
     """
-    # Each component linearly scaled to its contribution ceiling.
-    # SNR bounds align with ai_interpretation thresholds: 0..10 dB → 0..40 pts.
-    snr_score = min(max(mean_snr / 10.0 * 40, 0), 40)    # SNR 0..10 dB → 0..40
-    tms_score = min(max((tms - 0.8) / 0.2 * 40, 0), 40)  # TMS 0.8..1.0  → 0..40
-    fps_score = min(max((fps - 15) / 35 * 20, 0), 20)     # FPS 15..50    → 0..20
+    # SNR: −5..+10 dB → 0..40 pts  (rPPG literature: 0 dB = acceptable, 5 dB = good)
+    # TMS:  0.5..1.0     → 0..40 pts  (0.96 threshold kept for is_clean flag)
+    # FPS: 15..50        → 0..20 pts
+    snr_score = min(max((mean_snr + 5) / 15.0 * 40, 0), 40)
+    tms_score = min(max((tms  - 0.5) / 0.5  * 40, 0), 40)
+    fps_score = min(max((fps  - 15)  / 35.0  * 20, 0), 20)
 
     score = int(snr_score + tms_score + fps_score)
 

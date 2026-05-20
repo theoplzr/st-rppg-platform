@@ -2,7 +2,7 @@ import json
 import numpy as np
 from pathlib import Path
 
-from .pos_algorithm import pos_algorithm, bandpass_filter, spatial_average
+from .pos_algorithm import pos_wang2017_raw, pos_filtered, pos_signal, spatial_average
 from .signal_quality import full_quality_report
 from .spatial_maps import compute_all_maps, maps_to_base64_dict, roi_stats
 from .ai_interpretation import interpret_results
@@ -65,14 +65,15 @@ def analyze_session(session_name: str, sessions_root: Path = None, force: bool =
     frames, meta = load_session(session_name, sessions_root=root, resize=_ANALYSIS_RESIZE)
     fps = float(meta.get("measured_fps", 30))
 
-    rgb = spatial_average(frames)
-    raw = pos_algorithm(rgb, fps)
-    filt = bandpass_filter(raw, fps)
+    rgb       = spatial_average(frames)
+    raw       = pos_wang2017_raw(rgb, fps)
+    filt_bp   = pos_filtered(rgb, fps)   # detrend + bandpass — for metrics
+    filt_norm = pos_signal(rgb, fps)     # + Hilbert norm — for spatial maps
 
-    report = full_quality_report(raw, filt, fps, rgb_signal=rgb)
+    report = full_quality_report(raw, filt_bp, fps, rgb_signal=rgb)
 
     hr_hz = report["hr"]["hr_hz"] or 1.2
-    maps = compute_all_maps(frames, fps, hr_hz)
+    maps = compute_all_maps(frames, fps, hr_hz, filt_signal=filt_norm)
     maps_b64 = maps_to_base64_dict(maps, size=(256, 256))
 
     amp_stats = roi_stats(maps["amplitude"])
@@ -141,11 +142,11 @@ def analyze_roi(
     x, y, w, h = roi
     roi_frames = frames[:, y:y + h, x:x + w, :]
 
-    rgb = spatial_average(roi_frames)
-    raw = pos_algorithm(rgb, fps)
-    filt = bandpass_filter(raw, fps)
+    rgb     = spatial_average(roi_frames)
+    raw     = pos_wang2017_raw(rgb, fps)
+    filt_bp = pos_filtered(rgb, fps)
 
-    report = full_quality_report(raw, filt, fps, rgb_signal=rgb)
+    report = full_quality_report(raw, filt_bp, fps, rgb_signal=rgb)
     report["roi"] = {"x": x, "y": y, "w": w, "h": h}
     report["label"] = label
     return report

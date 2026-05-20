@@ -113,7 +113,8 @@
               Cartes ST-rPPG
             </div>
             <div style="padding: 14px">
-              <SpatialMap :maps="result.maps||{}" :stats="result.amp_stats" />
+              <SpatialMap :maps="result.maps||{}" :stats="result.amp_stats"
+                          @pixel-click="fetchPixelSignal" />
             </div>
           </div>
         </v-col>
@@ -155,6 +156,34 @@
         </v-col>
       </v-row>
 
+      <!-- POS Local vs Global comparison -->
+      <div v-if="pixelSignal || pixelLoading" class="card-block mb-5">
+        <div class="card-head">
+          <v-icon size="13" color="#e8622a">mdi-vector-combine</v-icon>
+          POS local vs global
+          <span v-if="pixelSignal" class="head-value" style="color:var(--muted);font-weight:500">
+            pixel ({{ pixelSignal.pixel.x }}, {{ pixelSignal.pixel.y }})
+          </span>
+          <button v-if="pixelSignal" class="close-btn" @click="pixelSignal = null">
+            <v-icon size="13">mdi-close</v-icon>
+          </button>
+        </div>
+        <div v-if="pixelLoading" style="display:flex;align-items:center;justify-content:center;height:200px;gap:10px">
+          <v-progress-circular indeterminate size="20" width="2" color="#e8622a" />
+          <span style="font-size:0.82rem;color:var(--muted)">Calcul POS local...</span>
+        </div>
+        <div v-else style="padding: 8px 4px">
+          <v-chart :option="pixelChartOption" autoresize style="height:220px" />
+        </div>
+        <div class="pixel-legend">
+          <span class="pleg pleg-global">— Signal global (POS spatial moyen)</span>
+          <span class="pleg pleg-local">— Signal local (pixel cliqué)</span>
+          <span v-if="pixelSignal" class="pleg" style="color:var(--muted)">
+            r = {{ pixelCorr }}
+          </span>
+        </div>
+      </div>
+
       <!-- AI Interpretation -->
       <div v-if="result.interpretation" class="interp-block">
         <div class="interp-header">
@@ -189,6 +218,7 @@
 <script setup>
 import { ref, computed, onMounted } from "vue";
 import { useRoute } from "vue-router";
+import axios from "axios";
 import { useSessionStore } from "../stores/session.js";
 import { apiUrl } from "../lib/api.js";
 import MetricCard   from "../components/ui/MetricCard.vue";
@@ -204,6 +234,87 @@ const sessionId = computed(() => route.params.id);
 const result  = ref(null);
 const loading = ref(false);
 
+// ── Pixel POS comparison ──────────────────────────────────────────────────────
+const pixelSignal  = ref(null);
+const pixelLoading = ref(false);
+
+async function fetchPixelSignal({ nx, ny }) {
+  pixelLoading.value = true;
+  pixelSignal.value  = null;
+  try {
+    const { data } = await axios.post(
+      apiUrl(`/analysis/${sessionId.value}/pixel_pos`),
+      { nx, ny },
+    );
+    pixelSignal.value = data;
+  } finally {
+    pixelLoading.value = false;
+  }
+}
+
+function pearson(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return 0;
+  const ma = a.slice(0, n).reduce((s, v) => s + v, 0) / n;
+  const mb = b.slice(0, n).reduce((s, v) => s + v, 0) / n;
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < n; i++) {
+    const ai = a[i] - ma, bi = b[i] - mb;
+    num += ai * bi; da += ai * ai; db += bi * bi;
+  }
+  return da && db ? num / Math.sqrt(da * db) : 0;
+}
+
+const pixelCorr = computed(() => {
+  if (!pixelSignal.value) return "—";
+  const r = pearson(pixelSignal.value.global, pixelSignal.value.local);
+  return r.toFixed(3);
+});
+
+const CHART_C = { bg: "transparent", border: "#1a1a2e", muted: "#55556a", text: "#b8b8cc" };
+
+const pixelChartOption = computed(() => {
+  if (!pixelSignal.value) return {};
+  const { global: g, local: l, time: t } = pixelSignal.value;
+  const n = Math.min(g.length, l.length, t.length);
+  const gd = g.slice(0, n).map((v, i) => [t[i], +v.toFixed(4)]);
+  const ld = l.slice(0, n).map((v, i) => [t[i], +v.toFixed(4)]);
+  return {
+    backgroundColor: "transparent",
+    tooltip: { trigger: "axis", formatter: ps =>
+      `<b>${(+ps[0].value[0]).toFixed(2)}s</b><br/>` +
+      ps.map(p => `<span style="color:${p.color}">●</span> ${p.seriesName}: ${(+p.value[1]).toFixed(3)}`).join("<br/>")
+    },
+    legend: { data: ["Global", "Local"], textStyle: { color: CHART_C.muted, fontSize: 11 }, top: 0, right: 0 },
+    grid: { left: 40, right: 20, top: 28, bottom: 30 },
+    xAxis: {
+      type: "value", name: "s", min: t[0], max: t[n - 1],
+      nameTextStyle: { color: CHART_C.muted, fontSize: 10 },
+      axisLabel: { color: CHART_C.muted, fontSize: 10 },
+      axisLine: { lineStyle: { color: CHART_C.border } },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      axisLabel: { color: CHART_C.muted, fontSize: 10 },
+      splitLine: { lineStyle: { color: CHART_C.border } },
+    },
+    series: [
+      {
+        name: "Global", type: "line", data: gd, smooth: true, symbol: "none",
+        lineStyle: { color: "#06b6d4", width: 1.8 },
+        areaStyle: { color: "rgba(6,182,212,0.06)" },
+      },
+      {
+        name: "Local", type: "line", data: ld, smooth: true, symbol: "none",
+        lineStyle: { color: "#e8622a", width: 1.8 },
+        areaStyle: { color: "rgba(232,98,42,0.06)" },
+      },
+    ],
+  };
+});
+
+// ── Scenario tag ──────────────────────────────────────────────────────────────
 const scenarioLabel = ref("");
 const scenarioZone  = ref("");
 const scenarioDesc  = ref("");
@@ -326,6 +437,22 @@ const interpItems = computed(() => {
 }
 .btn-accent-sm:hover { opacity: 0.85; }
 .btn-accent-sm:disabled { opacity: 0.4; cursor: default; }
+
+/* POS comparison */
+.close-btn {
+  margin-left: auto; background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 0 2px; display: flex; align-items: center;
+  transition: color 0.15s;
+}
+.close-btn:hover { color: var(--danger); }
+.pixel-legend {
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  padding: 8px 14px 14px;
+  font-size: 0.73rem;
+}
+.pleg { font-weight: 600; }
+.pleg-global { color: #06b6d4; }
+.pleg-local  { color: #e8622a; }
 
 /* AI Interpretation block */
 .interp-block {

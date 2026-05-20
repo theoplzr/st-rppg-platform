@@ -59,44 +59,59 @@ def estimate_hr_fft(signal: np.ndarray, fps: float,
 
 # ─── Sliding SNR ───────────────────────────────────────────────────────────────
 
+_BP_LOW  = 0.7   # cardiac band lower bound (Hz)
+_BP_HIGH = 3.0   # cardiac band upper bound (Hz)
+
+
 def compute_snr_sliding(signal: np.ndarray, fps: float,
                         hr_hz: float,
-                        window_sec: float = 5.0,
+                        window_sec: float = 8.0,
                         step_sec: float = 1.0,
-                        bw: float = 0.15) -> dict:
+                        bw: float = 0.2) -> dict:
     """
-    Sliding-window SNR computed over window_sec-second segments.
-    SNR = 10 * log10(P_signal / P_noise)
-    P_signal covers HR and 2nd harmonic ± bw Hz.
+    Sliding-window SNR — P(HR + 2HR) / P(cardiac band noise).
+    Noise is measured ONLY within the cardiac band [0.7, 3.0] Hz so that
+    out-of-band content (DC, respiration) does not artificially inflate noise.
+    window_sec=8 gives ≥10 cardiac cycles per window for stable spectral estimate.
     """
-    win_n = int(window_sec * fps)
-    step_n = int(step_sec * fps)
+    win_n  = max(int(window_sec * fps), 32)
+    step_n = max(int(step_sec   * fps), 1)
     N = len(signal)
     snr_values = []
-    time_axis = []
+    time_axis  = []
 
     for start in range(0, N - win_n + 1, step_n):
-        seg = signal[start: start + win_n]
-        fft = np.abs(np.fft.rfft(seg * np.hanning(win_n))) ** 2
+        seg  = signal[start: start + win_n]
+        pwr  = np.abs(np.fft.rfft(seg * np.hanning(win_n))) ** 2
         freq = np.fft.rfftfreq(win_n, d=1.0 / fps)
 
-        mask_sig = np.zeros(len(freq), dtype=bool)
-        for k in [1, 2]:
-            mask_sig |= (np.abs(freq - k * hr_hz) < bw)
+        # Restrict to cardiac band
+        band     = (freq >= _BP_LOW) & (freq <= _BP_HIGH)
+        pwr_band = pwr[band]
+        frq_band = freq[band]
+        if pwr_band.size < 3:
+            continue
 
-        p_sig = fft[mask_sig].sum()
-        p_noise = fft[~mask_sig].sum()
-        snr = 10 * np.log10(p_sig / (p_noise + 1e-12))
+        # Signal bins: HR fundamental + 2nd harmonic
+        mask_sig = np.zeros(pwr_band.size, dtype=bool)
+        for k in [1, 2]:
+            mask_sig |= (np.abs(frq_band - k * hr_hz) < bw)
+
+        p_sig   = pwr_band[mask_sig].sum()
+        p_noise = pwr_band[~mask_sig].sum()
+        if p_noise < 1e-12:
+            continue
+        snr = 10.0 * np.log10(p_sig / p_noise)
         snr_values.append(round(float(snr), 3))
         time_axis.append(round((start + win_n // 2) / fps, 3))
 
-    snr_arr = np.array(snr_values)
+    snr_arr = np.array(snr_values) if snr_values else np.array([0.0])
     return {
         "snr":      snr_values,
         "time":     time_axis,
-        "mean_snr": round(float(snr_arr.mean()), 2) if len(snr_arr) else 0,
-        "min_snr":  round(float(snr_arr.min()), 2) if len(snr_arr) else 0,
-        "std_snr":  round(float(snr_arr.std()), 2) if len(snr_arr) else 0,
+        "mean_snr": round(float(snr_arr.mean()), 2),
+        "min_snr":  round(float(snr_arr.min()),  2),
+        "std_snr":  round(float(snr_arr.std()),  2),
     }
 
 
@@ -168,12 +183,12 @@ def quality_score(mean_snr: float, tms: float, fps: float) -> dict:
     Composite quality score (0–100) combining SNR, TMS, and frame rate.
     Returns label, color, score, and actionable recommendations.
     """
-    # SNR: −5..+10 dB → 0..40 pts  (rPPG literature: 0 dB = acceptable, 5 dB = good)
-    # TMS:  0.5..1.0     → 0..40 pts  (0.96 threshold kept for is_clean flag)
-    # FPS: 15..50        → 0..20 pts
-    snr_score = min(max((mean_snr + 5) / 15.0 * 40, 0), 40)
-    tms_score = min(max((tms  - 0.5) / 0.5  * 40, 0), 40)
-    fps_score = min(max((fps  - 15)  / 35.0  * 20, 0), 20)
+    # SNR (cardiac-band):  0..8 dB  → 0..40 pts  (0 dB = weak but detectable, 8 dB = excellent)
+    # TMS:                0.6..1.0 → 0..40 pts  (0.96 kept for is_clean flag)
+    # FPS:               15..50   → 0..20 pts
+    snr_score = min(max(mean_snr / 8.0 * 40, 0), 40)
+    tms_score = min(max((tms - 0.6) / 0.4 * 40, 0), 40)
+    fps_score = min(max((fps - 15)  / 35.0 * 20, 0), 20)
 
     score = int(snr_score + tms_score + fps_score)
 

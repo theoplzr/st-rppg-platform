@@ -4,59 +4,126 @@
 
 <script setup>
 import { computed } from "vue";
+
 const props = defineProps({
   time:    { type: Array, default: () => [] },
   snr:     { type: Array, default: () => [] },
   meanSnr: Number,
   height:  { type: Number, default: 200 },
 });
-const option = computed(() => ({
-  backgroundColor: "transparent",
-  grid: { top: 20, right: 16, bottom: 32, left: 48 },
-  tooltip: {
-    trigger: "axis",
-    backgroundColor: "#0f0f17",
-    borderColor: "#252535",
-    textStyle: { color: "#c8c8d8", fontSize: 11 },
-  },
-  xAxis: {
-    type: "category",
-    data: props.time.map(t => t.toFixed(1)),
-    axisLine: { lineStyle: { color: "#252535" } },
-    axisTick: { show: false },
-    axisLabel: { color: "#6b6b85", fontSize: 10 },
-  },
-  yAxis: {
-    type: "value",
-    axisLine: { show: false },
-    axisTick: { show: false },
-    splitLine: { lineStyle: { color: "#16161f" } },
-    axisLabel: { color: "#6b6b85", fontSize: 10, formatter: v => v + " dB" },
-  },
-  series: [{
-    type: "line",
-    data: props.snr,
-    lineStyle: { color: "#22d47e", width: 2 },
-    areaStyle: {
-      color: {
-        type: "linear", x: 0, y: 0, x2: 0, y2: 1,
-        colorStops: [
-          { offset: 0, color: "rgba(34,212,126,0.18)" },
-          { offset: 1, color: "rgba(34,212,126,0)" },
-        ],
+
+const option = computed(() => {
+  const n = props.time.length;
+  if (!n) return {};
+
+  const pairs  = props.time.map((t, i) => [t, props.snr[i] ?? 0]);
+  const yMin   = Math.min(...props.snr, -3) - 1;
+  const yMax   = Math.max(...props.snr, 7)  + 1;
+  const mean   = props.meanSnr ?? 0;
+
+  return {
+    backgroundColor: "transparent",
+    grid: { top: 28, right: 64, bottom: 40, left: 54 },
+
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "line", lineStyle: { color: "#55556a", type: "dashed" } },
+      backgroundColor: "#0d0d16",
+      borderColor: "#252535",
+      borderWidth: 1,
+      padding: [8, 12],
+      textStyle: { color: "#c8c8d8", fontSize: 11 },
+      formatter: params => {
+        const t   = (+params[0]?.axisValue).toFixed(1);
+        const val = (+params[0]?.value[1]).toFixed(2);
+        const color = +val >= 3 ? "#22d47e" : +val >= 0 ? "#f59e0b" : "#ef4444";
+        return `<div style="font-size:10px;color:#55556a;margin-bottom:3px">t = ${t} s</div>SNR : <b style="color:${color}">${val} dB</b>`;
       },
     },
-    symbol: "none",
-    smooth: true,
-    markLine: {
-      silent: true,
-      symbol: "none",
-      data: [
-        { yAxis: 0, lineStyle: { color: "#ef4444", type: "dashed", width: 1 }, label: { formatter: "0 dB", color: "#ef4444", fontSize: 10 } },
-        { yAxis: 3, lineStyle: { color: "#f59e0b", type: "dashed", width: 1 }, label: { formatter: "3 dB", color: "#f59e0b", fontSize: 10 } },
-        { yAxis: 6, lineStyle: { color: "#e8622a", type: "dashed", width: 1 }, label: { formatter: "6 dB", color: "#e8622a", fontSize: 10 } },
-      ],
+
+    xAxis: {
+      type: "value",
+      min: props.time[0],
+      max: props.time[n - 1],
+      name: "Temps (s)",
+      nameLocation: "end",
+      nameGap: 8,
+      nameTextStyle: { color: "#55556a", fontSize: 10 },
+      axisLine:  { lineStyle: { color: "#252535" } },
+      axisTick:  { show: false },
+      axisLabel: { color: "#6b6b85", fontSize: 10, formatter: v => v.toFixed(0) + "s" },
+      splitLine: { show: false },
     },
-  }],
-}));
+
+    yAxis: {
+      type: "value",
+      name: "SNR (dB)",
+      nameLocation: "middle",
+      nameGap: 42,
+      nameTextStyle: { color: "#55556a", fontSize: 10 },
+      min: yMin,
+      max: yMax,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: "#6b6b85", fontSize: 10, formatter: v => v + " dB" },
+      splitLine: { show: false },
+    },
+
+    series: [
+      {
+        type: "line",
+        data: pairs,
+        symbol: "none",
+        smooth: true,
+        lineStyle: { color: "#22d47e", width: 2.2 },
+        areaStyle: {
+          color: {
+            type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: "rgba(34,212,126,0.18)" },
+              { offset: 1, color: "rgba(34,212,126,0.02)" },
+            ],
+          },
+        },
+        markArea: {
+          silent: true,
+          data: [
+            [{ yAxis: yMin, itemStyle: { color: "rgba(239,68,68,0.07)" } }, { yAxis: 0 }],
+            [{ yAxis: 0,    itemStyle: { color: "rgba(245,158,11,0.06)" } }, { yAxis: 3 }],
+            [{ yAxis: 3,    itemStyle: { color: "rgba(34,212,126,0.05)" } }, { yAxis: yMax }],
+          ],
+        },
+        markLine: {
+          silent: true,
+          symbol: ["none", "none"],
+          data: [
+            {
+              yAxis: 0,
+              lineStyle: { color: "#ef4444", type: "dashed", width: 1 },
+              label: { formatter: "0 dB", color: "#ef4444", fontSize: 10, position: "end" },
+            },
+            {
+              yAxis: 3,
+              lineStyle: { color: "#f59e0b", type: "dashed", width: 1 },
+              label: { formatter: "3 dB ✓", color: "#f59e0b", fontSize: 10, position: "end" },
+            },
+            {
+              yAxis: 6,
+              lineStyle: { color: "#22d47e", type: "dashed", width: 1 },
+              label: { formatter: "6 dB ★", color: "#22d47e", fontSize: 10, position: "end" },
+            },
+            {
+              yAxis: mean,
+              lineStyle: { color: "#06b6d4", type: "dotted", width: 2 },
+              label: {
+                formatter: `moy ${mean.toFixed(1)} dB`,
+                color: "#06b6d4", fontSize: 11, fontWeight: 600, position: "end",
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+});
 </script>

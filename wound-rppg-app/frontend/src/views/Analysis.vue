@@ -51,7 +51,8 @@
           <div class="card-block">
             <div class="card-head">
               <v-icon size="13" color="#e8622a">mdi-pulse</v-icon>
-              Signal POS
+              Signal POS global
+              <span style="font-size:0.68rem;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px">(moyenne spatiale)</span>
               <span class="head-value">{{ result.hr?.hr_bpm }} bpm</span>
             </div>
             <div class="chart-area">

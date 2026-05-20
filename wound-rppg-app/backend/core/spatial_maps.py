@@ -39,12 +39,16 @@ def _green_fft(frames: np.ndarray, fps: float):
 def _amplitude_from_fft(fft_power: np.ndarray, freq: np.ndarray,
                          hr_hz: float, bw: float = 0.15) -> np.ndarray:
     mask = np.abs(freq - hr_hz) < bw
+    if not np.any(mask):
+        return np.zeros(fft_power.shape[1:], dtype=fft_power.dtype)
     return fft_power[mask].mean(axis=0)  # (H, W)
 
 
 def _phase_from_fft(fft_complex: np.ndarray, freq: np.ndarray,
                      hr_hz: float, bw: float = 0.15) -> np.ndarray:
-    mask   = np.abs(freq - hr_hz) < bw
+    mask = np.abs(freq - hr_hz) < bw
+    if not np.any(mask):
+        return np.zeros(fft_complex.shape[1:], dtype=np.float32)
     fft_hr = fft_complex[mask].mean(axis=0)  # (H, W) complex
     phase  = np.angle(fft_hr)
     phase -= np.median(phase)               # center relative to spatial median
@@ -56,9 +60,11 @@ def _snr_from_fft(fft_power: np.ndarray, freq: np.ndarray,
     mask_sig = np.zeros(len(freq), dtype=bool)
     for k in [1, 2]:
         mask_sig |= (np.abs(freq - k * hr_hz) < bw)
+    if not np.any(mask_sig):
+        return np.full(fft_power.shape[1:], -30.0, dtype=np.float32)
     p_sig   = fft_power[mask_sig].sum(axis=0)
     p_noise = fft_power[~mask_sig].sum(axis=0)
-    return 10 * np.log10(p_sig / (p_noise + 1e-12))
+    return 10 * np.log10((p_sig + 1e-12) / (p_noise + 1e-12))
 
 
 def _coherence_from_pos(frames: np.ndarray, fps: float,

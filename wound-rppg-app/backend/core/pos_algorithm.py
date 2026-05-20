@@ -65,7 +65,9 @@ def pos_filtered(RGB: np.ndarray, fps: float,
     H    = pos_wang2017_raw(RGB, fps, win_sec)
     H    = scipy_signal.detrend(H, type="linear")
     nyq  = fps / 2.0
-    b, a = scipy_signal.butter(2, [bp_low / nyq, bp_high / nyq], btype="bandpass")
+    lo   = float(np.clip(bp_low  / nyq, 1e-6, 1 - 1e-6))
+    hi   = float(np.clip(bp_high / nyq, 1e-6, 1 - 1e-6))
+    b, a = scipy_signal.butter(2, [lo, hi], btype="bandpass")
     H    = scipy_signal.filtfilt(b, a, H)
     return H.astype(np.float32)
 
@@ -112,7 +114,9 @@ def pos_local(RGB_tensor: np.ndarray, fps: float,
 
     Hb   = scipy_signal.detrend(Hb, axis=0, type="linear")
     nyq  = fps / 2.0
-    b, a = scipy_signal.butter(2, [bp_low / nyq, bp_high / nyq], btype="bandpass")
+    lo   = float(np.clip(bp_low  / nyq, 1e-6, 1 - 1e-6))
+    hi   = float(np.clip(bp_high / nyq, 1e-6, 1 - 1e-6))
+    b, a = scipy_signal.butter(2, [lo, hi], btype="bandpass")
     Hb   = scipy_signal.filtfilt(b, a, Hb, axis=0)
     env  = np.abs(scipy_signal.hilbert(Hb, axis=0)) + _EPS
     return (Hb / env).astype(np.float32)

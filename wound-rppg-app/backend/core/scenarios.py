@@ -64,6 +64,8 @@ def analyze_session(session_name: str, sessions_root: Path = None, force: bool =
 
     frames, meta = load_session(session_name, sessions_root=root, resize=_ANALYSIS_RESIZE)
     fps = float(meta.get("measured_fps", 30))
+    if not (1.0 <= fps <= 240.0):
+        fps = 30.0
 
     rgb       = spatial_average(frames)
     raw       = pos_wang2017_raw(rgb, fps)
@@ -73,7 +75,20 @@ def analyze_session(session_name: str, sessions_root: Path = None, force: bool =
     report = full_quality_report(raw, filt_bp, fps, rgb_signal=rgb)
 
     hr_hz = report["hr"]["hr_hz"] or 1.2
-    maps = compute_all_maps(frames, fps, hr_hz, filt_signal=filt_norm)
+
+    # Subsample to at most 300 frames for spatial maps (prevents 30-60 s compute on 3-min videos)
+    _MAP_MAX_FRAMES = 300
+    n_total = len(frames)
+    if n_total > _MAP_MAX_FRAMES:
+        center     = n_total // 2
+        half       = _MAP_MAX_FRAMES // 2
+        map_frames = frames[center - half: center + half]
+        map_signal = filt_norm[center - half: center + half]
+    else:
+        map_frames = frames
+        map_signal = filt_norm
+
+    maps = compute_all_maps(map_frames, fps, hr_hz, filt_signal=map_signal)
     maps_b64 = maps_to_base64_dict(maps, size=(256, 256))
 
     amp_stats = roi_stats(maps["amplitude"])

@@ -7,11 +7,14 @@ Session I/O layer:
   - List available sessions for the frontend
 """
 
+import base64
 import cv2
+import io
 import json
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from PIL import Image
 
 
 SESSIONS_DIR = Path(__file__).parent.parent / "sessions"
@@ -162,6 +165,79 @@ def load_results(
 
     with open(results_path) as f:
         return json.load(f)
+
+
+def save_mask(
+    session_name: str,
+    mask_b64: str,
+    sessions_root: Path = None,
+) -> Path:
+    """
+    Save a mask from a base64-encoded PNG.
+    The PNG must be grayscale or RGBA — white pixels = wound area.
+    """
+    root = sessions_root or SESSIONS_DIR
+    mask_path = root / session_name / "mask.png"
+    mask_path.parent.mkdir(parents=True, exist_ok=True)
+
+    img_data = base64.b64decode(mask_b64)
+    img = Image.open(io.BytesIO(img_data)).convert("L")
+    img.save(mask_path, format="PNG")
+    return mask_path
+
+
+def load_mask(
+    session_name: str,
+    resize: tuple = None,
+    sessions_root: Path = None,
+) -> np.ndarray | None:
+    """
+    Load mask.png for a session and return a (H, W) bool array.
+    Pixels with value >= 128 are considered part of the wound.
+    Returns None if no mask exists.
+    """
+    root = sessions_root or SESSIONS_DIR
+    mask_path = root / session_name / "mask.png"
+    if not mask_path.exists():
+        return None
+
+    img = Image.open(mask_path).convert("L")
+    if resize:
+        img = img.resize(resize, Image.NEAREST)
+    return np.array(img) >= 128
+
+
+def get_thumbnail(
+    session_name: str,
+    sessions_root: Path = None,
+    size: tuple = (256, 192),
+) -> str | None:
+    """
+    Return the first frame of a session as a base64-encoded JPEG string.
+    Returns None if no frames are found.
+    """
+    root = sessions_root or SESSIONS_DIR
+    frames_dir = root / session_name / "frames"
+    if not frames_dir.exists():
+        return None
+
+    exts = (".png", ".jpg", ".jpeg", ".bmp")
+    files = sorted(p for p in frames_dir.iterdir() if p.suffix.lower() in exts)
+    if not files:
+        return None
+
+    img = cv2.imread(str(files[0]))
+    if img is None:
+        return None
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(img)
+    pil.thumbnail(size, Image.LANCZOS)
+
+    buf = io.BytesIO()
+    pil.save(buf, format="JPEG", quality=75)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
 
 
 def save_scenario(

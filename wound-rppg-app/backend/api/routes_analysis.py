@@ -2,7 +2,7 @@
 import logging
 import numpy as np
 from flask import Blueprint, jsonify, request
-from core.scenarios import analyze_session, analyze_roi
+from core.scenarios import analyze_session, analyze_roi, timeline
 from core.job_queue import submit, get_job
 from api.validation import reject_invalid_session
 
@@ -99,6 +99,25 @@ def pixel_pos(session_name):
         return jsonify({"error": "Session not analyzed yet — run analysis first."}), 404
     except Exception:
         log.exception("pixel_pos failed session=%s", session_name)
+        return jsonify(_ERR_500), 500
+
+
+@bp_analysis.get("/timeline")
+def get_timeline():
+    """
+    Query params:
+      zone      — filter by zone
+      label     — filter by scenario label
+      wound_id  — filter by wound_id (takes priority over zone/label)
+    """
+    zone      = request.args.get("zone")
+    label     = request.args.get("label")
+    wound_id  = request.args.get("wound_id")
+    try:
+        result = timeline(zone=zone, label=label, wound_id=wound_id)
+        return jsonify(result)
+    except Exception:
+        log.exception("timeline failed zone=%s label=%s wound_id=%s", zone, label, wound_id)
         return jsonify(_ERR_500), 500
 
 

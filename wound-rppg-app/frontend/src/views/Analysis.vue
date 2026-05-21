@@ -157,6 +157,46 @@
         </v-col>
       </v-row>
 
+      <!-- Mask editor -->
+      <div class="card-block mb-5">
+        <div class="card-head">
+          <v-icon size="13" color="#a78bfa">mdi-draw-pen</v-icon>
+          Zone de plaie (masque spatial)
+          <span v-if="maskSaved" class="mask-badge mask-badge--on">Masque actif</span>
+          <span v-else class="mask-badge mask-badge--off">Aucun masque</span>
+          <div class="mask-tools">
+            <label class="mask-label">Pinceau</label>
+            <input type="range" v-model.number="brushSize" min="4" max="48" step="2"
+                   class="brush-slider" title="Taille du pinceau" />
+            <button class="btn-mask" :class="{ 'btn-mask--active': !erasing }" @click="erasing = false">
+              <v-icon size="13">mdi-brush</v-icon>
+            </button>
+            <button class="btn-mask" :class="{ 'btn-mask--active': erasing }" @click="erasing = true">
+              <v-icon size="13">mdi-eraser</v-icon>
+            </button>
+            <button class="btn-mask btn-mask--clear" @click="clearMask">
+              <v-icon size="13">mdi-trash-can-outline</v-icon> Effacer
+            </button>
+            <button class="btn-mask btn-mask--save" @click="saveMask" :disabled="maskSaving">
+              <v-icon size="13">mdi-content-save-outline</v-icon>
+              {{ maskSaving ? "Enregistrement…" : "Sauvegarder" }}
+            </button>
+          </div>
+        </div>
+        <div class="mask-canvas-wrap">
+          <canvas ref="maskBgCanvas" class="mask-bg" />
+          <canvas ref="maskDrawCanvas" class="mask-draw"
+            @mousedown="startDraw" @mousemove="draw" @mouseup="stopDraw"
+            @mouseleave="stopDraw" @touchstart.prevent="startDraw" @touchmove.prevent="draw"
+            @touchend="stopDraw" />
+          <div v-if="!thumbnail" class="mask-placeholder">
+            <v-icon size="32" style="color:var(--border2)">mdi-image-outline</v-icon>
+            <span>Chargement de l'aperçu…</span>
+          </div>
+        </div>
+        <p class="mask-hint">Peindre la zone de plaie en blanc. Le masque sera appliqué lors de la prochaine analyse.</p>
+      </div>
+
       <!-- POS Local vs Global comparison -->
       <div v-if="pixelSignal || pixelLoading" class="card-block mb-5">
         <div class="card-head">
@@ -217,7 +257,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, nextTick } from "vue";
 import { useRoute } from "vue-router";
 import axios from "axios";
 import { useSessionStore } from "../stores/session.js";
@@ -315,6 +355,125 @@ const pixelChartOption = computed(() => {
   };
 });
 
+// ── Mask editor ──────────────────────────────────────────────────────────────
+const maskBgCanvas   = ref(null);
+const maskDrawCanvas = ref(null);
+const thumbnail      = ref(null);
+const maskSaved      = ref(false);
+const maskSaving     = ref(false);
+const brushSize      = ref(18);
+const erasing        = ref(false);
+let   isDrawing      = false;
+
+const MASK_W = 320;
+const MASK_H = 240;
+
+function getCanvasPos(e, canvas) {
+  const rect  = canvas.getBoundingClientRect();
+  const touch = e.touches?.[0] || e;
+  const scaleX = MASK_W / rect.width;
+  const scaleY = MASK_H / rect.height;
+  return [(touch.clientX - rect.left) * scaleX, (touch.clientY - rect.top) * scaleY];
+}
+
+function paintCircle(x, y) {
+  const ctx = maskDrawCanvas.value?.getContext("2d");
+  if (!ctx) return;
+  ctx.globalCompositeOperation = erasing.value ? "destination-out" : "source-over";
+  ctx.fillStyle = "rgba(168,139,250,0.75)";
+  ctx.beginPath();
+  ctx.arc(x, y, brushSize.value, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function startDraw(e) {
+  isDrawing = true;
+  const [x, y] = getCanvasPos(e, maskDrawCanvas.value);
+  paintCircle(x, y);
+}
+function draw(e) {
+  if (!isDrawing) return;
+  const [x, y] = getCanvasPos(e, maskDrawCanvas.value);
+  paintCircle(x, y);
+}
+function stopDraw() { isDrawing = false; }
+
+function clearMask() {
+  const ctx = maskDrawCanvas.value?.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, MASK_W, MASK_H);
+}
+
+async function saveMask() {
+  const drawCtx = maskDrawCanvas.value?.getContext("2d");
+  if (!drawCtx) return;
+
+  // Build binary mask: painted pixels → white, rest → black
+  const offscreen = document.createElement("canvas");
+  offscreen.width  = MASK_W;
+  offscreen.height = MASK_H;
+  const off = offscreen.getContext("2d");
+
+  off.fillStyle = "#000";
+  off.fillRect(0, 0, MASK_W, MASK_H);
+
+  const imgData = drawCtx.getImageData(0, 0, MASK_W, MASK_H);
+  const outData = off.getImageData(0, 0, MASK_W, MASK_H);
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    if (imgData.data[i + 3] > 64) {   // alpha > 25%
+      outData.data[i]     = 255;
+      outData.data[i + 1] = 255;
+      outData.data[i + 2] = 255;
+      outData.data[i + 3] = 255;
+    }
+  }
+  off.putImageData(outData, 0, 0);
+
+  const b64 = offscreen.toDataURL("image/png").split(",")[1];
+  maskSaving.value = true;
+  try {
+    await axios.post(apiUrl(`/sessions/${sessionId.value}/mask`), { mask: b64 });
+    maskSaved.value = true;
+  } finally {
+    maskSaving.value = false;
+  }
+}
+
+async function loadThumbnailAndMask() {
+  try {
+    const { data: tData } = await axios.get(apiUrl(`/sessions/${sessionId.value}/thumbnail`));
+    thumbnail.value = tData.thumbnail;
+    await nextTick();
+    if (maskBgCanvas.value) {
+      const ctx = maskBgCanvas.value.getContext("2d");
+      maskBgCanvas.value.width  = MASK_W;
+      maskBgCanvas.value.height = MASK_H;
+      maskDrawCanvas.value.width  = MASK_W;
+      maskDrawCanvas.value.height = MASK_H;
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, MASK_W, MASK_H);
+      img.src = `data:image/jpeg;base64,${tData.thumbnail}`;
+    }
+  } catch { /* no thumbnail yet */ }
+
+  try {
+    const { data: mData } = await axios.get(apiUrl(`/sessions/${sessionId.value}/mask`));
+    maskSaved.value = mData.has_mask;
+    if (mData.has_mask && maskDrawCanvas.value) {
+      await nextTick();
+      const ctx = maskDrawCanvas.value.getContext("2d");
+      const img = new Image();
+      img.onload = () => {
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 0.75;
+        ctx.drawImage(img, 0, 0, MASK_W, MASK_H);
+        ctx.globalAlpha = 1.0;
+      };
+      img.src = `data:image/png;base64,${mData.mask}`;
+    }
+  } catch { /* no mask */ }
+}
+
 // ── Scenario tag ──────────────────────────────────────────────────────────────
 const scenarioLabel = ref("");
 const scenarioZone  = ref("");
@@ -329,6 +488,7 @@ const scenarioOptions = [
 onMounted(async () => {
   try { result.value = await store.getResult(sessionId.value); }
   catch { /* not yet analyzed */ }
+  loadThumbnailAndMask();
 });
 
 async function runAnalysis(force) {
@@ -526,4 +686,53 @@ const interpItems = computed(() => {
 }
 .item-label { font-size: 0.68rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
 .item-short { font-size: 0.8rem; font-weight: 600; }
+
+/* Mask editor */
+.mask-badge {
+  font-size: 0.68rem; font-weight: 700; padding: 2px 9px; border-radius: 5px;
+  text-transform: none; letter-spacing: 0;
+}
+.mask-badge--on  { background: rgba(168,139,250,0.12); color: #a78bfa; border: 1px solid rgba(168,139,250,0.3); }
+.mask-badge--off { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+.mask-tools {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto;
+}
+.mask-label { font-size: 0.72rem; color: var(--muted); }
+.brush-slider { width: 80px; accent-color: #a78bfa; }
+.btn-mask {
+  display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 6px;
+  font-size: 0.74rem; font-weight: 600; cursor: pointer; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--muted); transition: all 0.15s;
+  text-transform: none; letter-spacing: 0;
+}
+.btn-mask:hover { border-color: #a78bfa; color: #a78bfa; }
+.btn-mask--active { border-color: #a78bfa; color: #a78bfa; background: rgba(168,139,250,0.1); }
+.btn-mask--clear:hover { border-color: var(--danger); color: var(--danger); }
+.btn-mask--save { background: #a78bfa; color: #fff; border-color: #a78bfa; }
+.btn-mask--save:hover { opacity: 0.85; }
+.btn-mask--save:disabled { opacity: 0.5; cursor: default; }
+
+.mask-canvas-wrap {
+  position: relative;
+  width: 320px;
+  height: 240px;
+  margin: 14px auto;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #000;
+}
+.mask-bg, .mask-draw {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 100%;
+}
+.mask-draw { cursor: crosshair; }
+.mask-placeholder {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+  font-size: 0.8rem; color: var(--muted);
+}
+.mask-hint { font-size: 0.72rem; color: var(--muted); text-align: center; padding: 0 16px 14px; margin: 0; }
 </style>

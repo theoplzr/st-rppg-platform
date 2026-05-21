@@ -48,6 +48,15 @@
                 <span class="pulse">●</span> REC
               </div>
 
+              <!-- Live quality badge (top-right, shown once signal is established) -->
+              <transition name="fade">
+                <div v-if="phase === 'recording' && liveQuality !== 'wait'"
+                     class="live-qual-badge" :class="`qual-${liveQuality}`">
+                  <span class="qual-dot" />
+                  {{ { good: 'Bon signal', ok: 'Signal moyen', poor: 'Éclairage insuffisant' }[liveQuality] }}
+                </div>
+              </transition>
+
               <transition name="fade">
                 <div v-if="countdown > 0" class="countdown-overlay">{{ countdown }}</div>
               </transition>
@@ -57,13 +66,49 @@
               </div>
             </div>
 
+            <!-- Frame bar with live FPS -->
             <div v-if="phase === 'recording'" class="frame-bar">
               <v-icon size="15" style="color:var(--accent)">mdi-image-multiple</v-icon>
               <span class="frame-count">{{ capturedFrames }}</span>
               <span style="color:var(--muted)"> / {{ totalFrames }} frames</span>
+
+              <span class="fps-live" :class="{ 'fps-warn': liveFpsDropped }">
+                <v-icon size="12">mdi-speedometer</v-icon>
+                {{ liveFpsReal > 0 ? liveFpsReal : '…' }} fps
+                <span v-if="liveFpsDropped" style="font-size:0.68rem; margin-left:2px">⚠ drops</span>
+              </span>
+
               <span class="ml-auto" style="color:var(--muted); font-size:0.8rem">
                 {{ elapsedSec.toFixed(1) }} s / {{ recordDuration }} s
               </span>
+            </div>
+
+            <!-- Live rPPG signal chart -->
+            <div v-if="phase === 'recording'" class="live-signal-block">
+              <div class="live-sig-head">
+                <v-icon size="11" color="#22d47e">mdi-pulse</v-icon>
+                <span>Signal vert — rPPG live</span>
+                <span v-if="liveQuality === 'wait'" class="sig-tag sig-wait">Initialisation…</span>
+                <span v-else-if="liveQuality === 'good'" class="sig-tag sig-good">
+                  <v-icon size="10">mdi-check-circle</v-icon> Bon signal
+                </span>
+                <span v-else-if="liveQuality === 'ok'" class="sig-tag sig-ok">
+                  <v-icon size="10">mdi-alert-circle-outline</v-icon> Signal moyen
+                </span>
+                <span v-else class="sig-tag sig-poor">
+                  <v-icon size="10">mdi-alert</v-icon> Éclairage insuffisant
+                </span>
+              </div>
+              <svg viewBox="0 0 300 60" class="live-signal-svg" preserveAspectRatio="none">
+                <polyline v-if="liveSignalPoints"
+                  :points="liveSignalPoints"
+                  fill="none"
+                  :stroke="liveQuality === 'poor' ? '#ef4444' : liveQuality === 'ok' ? '#f59e0b' : '#22d47e'"
+                  stroke-width="1.5"
+                  stroke-linejoin="round"
+                  stroke-linecap="round"
+                />
+              </svg>
             </div>
           </div>
         </v-col>
@@ -309,11 +354,10 @@ import FFTChart    from "../components/charts/FFTChart.vue";
 import { apiUrl } from "../lib/api.js";
 
 // Acquisition protocol — resolution matches colleagues' OpenCV script (512×512)
-// fps and duration are user-configurable
 const CFG = { width: 512, height: 512 };
 
-const recordFps      = ref(50);  // default matches lab camera (50fps)
-const recordDuration = ref(30);  // seconds — minimum 30s for reliable rPPG
+const recordFps      = ref(50);
+const recordDuration = ref(30);
 const totalFrames    = computed(() => recordFps.value * recordDuration.value);
 
 // Refs — DOM
@@ -322,12 +366,12 @@ const canvasEl  = ref(null);
 const fileInput = ref(null);
 
 // State
-const mode           = ref("camera");  // "camera" | "upload"
+const mode           = ref("camera");
 const isDragging     = ref(false);
 const cameraReady    = ref(false);
 const cameraError    = ref("");
 const sessionLabel   = ref("");
-const phase          = ref("idle");   // idle | countdown | recording | packaging | uploading | analyzing | done | error
+const phase          = ref("idle");
 const countdown      = ref(0);
 const capturedFrames = ref(0);
 const elapsedSec     = ref(0);
@@ -336,15 +380,31 @@ const currentSession = ref("");
 const analysisResult = ref(null);
 const statusMessage  = ref("");
 
+// Live signal state
+const liveSignalPoints = ref("");
+const liveQuality      = ref("wait");  // "wait" | "good" | "ok" | "poor"
+const liveFpsReal      = ref(0);
+const liveFpsDropped   = ref(false);
+
 // Camera stream
-let stream       = null;
-let captureTimer = null;
-let elapsedTimer = null;
+let stream = null;
+
+// RAF-based capture
+let rafId         = null;
+let canvasCtx     = null;   // initialized once per recording to enable willReadFrequently
+let startTime     = null;
 
 // Captured data
 let frames     = [];
 let timestamps = [];
-let startTime  = null;
+
+// Live green channel ring buffer (last LIVE_BUF_SEC seconds)
+const LIVE_BUF_SEC = 8;
+let liveGreenBuf = [];
+
+// FPS tracking
+let fpsFrameCount = 0;
+let fpsStartTime  = 0;
 
 // ── Camera setup ──────────────────────────────────────────
 async function initCamera() {
@@ -382,49 +442,138 @@ async function startCountdown() {
   startRecording();
 }
 
-// ── Recording ─────────────────────────────────────────────
+// ── Recording (RAF-based) ─────────────────────────────────
 function startRecording() {
-  phase.value    = "recording";
-  frames         = [];
-  timestamps     = [];
+  phase.value = "recording";
+  frames      = [];
+  timestamps  = [];
+  liveGreenBuf.length = 0;
   capturedFrames.value = 0;
   elapsedSec.value     = 0;
-  startTime = performance.now();
+  liveSignalPoints.value = "";
+  liveQuality.value      = "wait";
+  liveFpsReal.value      = 0;
+  liveFpsDropped.value   = false;
 
-  const ctx      = canvasEl.value.getContext("2d");
-  const interval = 1000 / recordFps.value;
+  // willReadFrequently = true: browser optimizes canvas for getImageData calls
+  canvasCtx = canvasEl.value.getContext("2d", { willReadFrequently: true });
 
-  // Elapsed display
-  elapsedTimer = setInterval(() => {
-    elapsedSec.value = (performance.now() - startTime) / 1000;
-  }, 100);
+  startTime     = performance.now();
+  fpsFrameCount = 0;
+  fpsStartTime  = startTime;
 
-  captureTimer = setInterval(() => {
-    const t = (performance.now() - startTime) / 1000;
-    ctx.drawImage(videoEl.value, 0, 0, CFG.width, CFG.height);
+  rafId = requestAnimationFrame(captureLoop);
+}
+
+function captureLoop(timestamp) {
+  if (phase.value !== "recording") return;
+
+  const elapsedMs       = timestamp - startTime;
+  const expectedFrames  = Math.floor(elapsedMs * recordFps.value / 1000);
+  elapsedSec.value      = elapsedMs / 1000;
+
+  if (capturedFrames.value < expectedFrames) {
+    // Draw current video frame to hidden canvas
+    canvasCtx.drawImage(videoEl.value, 0, 0, CFG.width, CFG.height);
     frames.push(canvasEl.value.toDataURL("image/png"));
-    timestamps.push(parseFloat(t.toFixed(6)));
+    timestamps.push(parseFloat((elapsedMs / 1000).toFixed(6)));
+
+    // Extract mean green channel (stride = 16 px → 16384 samples for 512×512)
+    const px = canvasCtx.getImageData(0, 0, CFG.width, CFG.height).data;
+    let g = 0, n = 0;
+    for (let i = 0; i < px.length; i += 64) { // 64 bytes = 16 RGBA pixels
+      g += px[i + 1]; // green is byte 1 of each RGBA group
+      n++;
+    }
+    liveGreenBuf.push(g / n);
+
+    // Trim ring buffer to LIVE_BUF_SEC
+    const maxBuf = Math.ceil(recordFps.value * LIVE_BUF_SEC);
+    if (liveGreenBuf.length > maxBuf) liveGreenBuf.shift();
+
     capturedFrames.value++;
 
-    if (capturedFrames.value >= totalFrames.value) {
-      stopCapture();
-      packageAndUpload();
+    // Live FPS: update every second
+    fpsFrameCount++;
+    const fpsDt = timestamp - fpsStartTime;
+    if (fpsDt >= 1000) {
+      liveFpsReal.value    = Math.round(fpsFrameCount / fpsDt * 1000);
+      liveFpsDropped.value = liveFpsReal.value < recordFps.value * 0.85;
+      fpsFrameCount = 0;
+      fpsStartTime  = timestamp;
     }
-  }, interval);
+
+    // Update live chart every 15 frames
+    if (capturedFrames.value % 15 === 0) updateLiveSignal();
+
+    if (capturedFrames.value >= totalFrames.value) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+      packageAndUpload();
+      return;
+    }
+  }
+
+  rafId = requestAnimationFrame(captureLoop);
+}
+
+// ── Live signal processing ────────────────────────────────
+function updateLiveSignal() {
+  const buf = [...liveGreenBuf];
+  if (buf.length < 10) return;
+
+  const N  = buf.length;
+  const dc = buf.reduce((a, b) => a + b, 0) / N;
+
+  // Linear detrend: subtract best-fit line to remove slow drift
+  const mx  = (N - 1) / 2;
+  let num = 0, den = 0;
+  for (let i = 0; i < N; i++) {
+    num += (i - mx) * (buf[i] - dc);
+    den += (i - mx) ** 2;
+  }
+  const slope = den > 0 ? num / den : 0;
+  const detrended = buf.map((v, i) => v - (dc + slope * (i - mx)));
+
+  // Normalize for display
+  const peak = Math.max(...detrended.map(Math.abs)) + 1e-8;
+  const norm = detrended.map(v => v / peak);
+
+  // SVG polyline: viewBox 0 0 300 60, signal centered at y=30
+  const W = 300, H = 60, pad = 4;
+  liveSignalPoints.value = norm.map((v, i) => {
+    const x = pad + (i / (norm.length - 1)) * (W - 2 * pad);
+    const y = H / 2 - v * (H / 2 - pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+
+  // Quality from AC/DC ratio (need at least 3 seconds of data)
+  const minSamples = Math.round(recordFps.value * 3);
+  if (buf.length < minSamples) {
+    liveQuality.value = "wait";
+    return;
+  }
+  const acRms = Math.sqrt(detrended.reduce((a, v) => a + v * v, 0) / N);
+  const ratio = acRms / (dc + 1e-8);
+
+  if (ratio > 0.015)      liveQuality.value = "good";
+  else if (ratio > 0.005) liveQuality.value = "ok";
+  else                    liveQuality.value = "poor";
 }
 
 function stopCapture() {
-  clearInterval(captureTimer);
-  clearInterval(elapsedTimer);
-  captureTimer = null;
-  elapsedTimer = null;
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
 }
 
 function abortRecording() {
   stopCapture();
-  frames     = [];
-  timestamps = [];
-  phase.value = "idle";
+  frames           = [];
+  timestamps       = [];
+  liveGreenBuf.length = 0;
+  phase.value      = "idle";
 }
 
 const progressPct = computed(() => {
@@ -450,8 +599,8 @@ async function packageAndUpload() {
     session_name:   sessionName,
     date:           now.toISOString(),
     platform:       "browser",
-    camera_index:   1,          // colleagues' script uses camera index 1
-    codec:          "MJPG",     // matches CAP_PROP_FOURCC in acquisition script
+    camera_index:   1,
+    codec:          "MJPG",
     requested_fps:  recordFps.value,
     measured_fps:   parseFloat(measuredFps.toFixed(3)),
     nb_frames:      frames.length,
@@ -468,17 +617,16 @@ async function packageAndUpload() {
 
   for (let i = 0; i < frames.length; i++) {
     const base64 = frames[i].split(",")[1];
-    // Naming matches colleagues' OpenCV script: 0000.png, 0001.png, …
     const num = String(i).padStart(4, "0");
     framesFolder.file(`${num}.png`, base64, { base64: true });
   }
   rootFolder.file("metadata.json", JSON.stringify(metadata, null, 2));
-  frames = []; // free memory before generating ZIP
+  frames = [];
 
   const zipBlob = await zip.generateAsync({
     type:               "blob",
     compression:        "DEFLATE",
-    compressionOptions: { level: 1 }, // PNG already compressed — minimal overhead
+    compressionOptions: { level: 1 },
   });
 
   await uploadSession(sessionName, zipBlob);
@@ -524,7 +672,6 @@ async function uploadSession(sessionName, zipBlob) {
         uploadProgress.value = e.total ? Math.round((e.loaded / e.total) * 100) : 0;
       },
     });
-    // Use session name returned by the server (extracted from ZIP folder)
     uploadedName = data.sessions?.[0] || sessionName;
   } catch (e) {
     phase.value         = "error";
@@ -561,35 +708,29 @@ async function pollJob(sessionName, jobId) {
     await new Promise(r => setTimeout(r, 2000));
     try {
       const { data } = await axios.get(apiUrl(`/analysis/${sessionName}/status/${jobId}`));
-      
-      // On réinitialise le compteur d'erreurs si la requête réussit
       consecutiveErrors = 0;
 
       if (data.status === "done") break;
-      
+
       if (data.status === "error") {
         phase.value = "error";
         statusMessage.value = data.error || "L'analyse a échoué.";
-        return; // ON ARRÊTE LA BOUCLE
+        return;
       }
     } catch (e) {
       consecutiveErrors++;
       const status = e.response?.status;
 
-      // SI 404 (Job perdu après crash) ou 500 (Crash serveur)
       if (status === 404 || status === 500 || consecutiveErrors >= maxErrors) {
-        console.error("Arrêt du polling : Erreur critique serveur", status);
         phase.value = "error";
-        statusMessage.value = status === 404 
-          ? "Session perdue (le serveur a redémarré)." 
+        statusMessage.value = status === 404
+          ? "Session perdue (le serveur a redémarré)."
           : "Le serveur a rencontré une erreur critique.";
-        return; // ON ARRÊTE LA BOUCLE ICI (Fini les 500 requêtes/minute)
+        return;
       }
-      // Pour les autres erreurs (timeout réseau léger), on laisse une chance
     }
   }
 
-  // Fetch full result (seulement si on est sorti du while par le "break")
   try {
     const { data: result } = await axios.get(apiUrl(`/analysis/${sessionName}`));
     analysisResult.value = result;
@@ -610,8 +751,13 @@ function resetAcquisition() {
   capturedFrames.value = 0;
   elapsedSec.value     = 0;
   uploadProgress.value = 0;
-  frames               = [];
-  timestamps           = [];
+  liveSignalPoints.value = "";
+  liveQuality.value      = "wait";
+  liveFpsReal.value      = 0;
+  liveFpsDropped.value   = false;
+  frames     = [];
+  timestamps = [];
+  liveGreenBuf.length = 0;
 }
 
 // ── Computed ──────────────────────────────────────────────
@@ -701,8 +847,57 @@ onUnmounted(() => {
 }
 .video-progress { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: rgba(255,255,255,0.08); }
 .video-progress-fill { height: 100%; background: var(--accent); transition: width 0.1s linear; box-shadow: 0 0 8px var(--accent); }
+
+/* ── Live quality badge (camera overlay, top-right) ─────── */
+.live-qual-badge {
+  position: absolute; top: 12px; right: 12px;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.72rem; font-weight: 700;
+  padding: 4px 10px; border-radius: 5px;
+  backdrop-filter: blur(4px);
+}
+.qual-good { background: rgba(34,212,126,0.18); color: #22d47e; border: 1px solid rgba(34,212,126,0.4); }
+.qual-ok   { background: rgba(245,158,11,0.18); color: #f59e0b; border: 1px solid rgba(245,158,11,0.4); }
+.qual-poor { background: rgba(239,68,68,0.18);  color: #ef4444; border: 1px solid rgba(239,68,68,0.4); }
+.qual-dot  { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* ── Frame bar ──────────────────────────────────────────── */
 .frame-bar { display: flex; align-items: center; gap: 6px; padding: 8px 14px; font-size: 0.8rem; color: var(--text); border-top: 1px solid var(--border); }
 .frame-count { color: var(--accent); font-weight: 700; }
+
+.fps-live {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: 8px; font-size: 0.76rem; color: var(--muted);
+  padding: 1px 7px; border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.fps-warn { color: var(--danger) !important; border-color: rgba(239,68,68,0.4) !important; font-weight: 700; }
+
+/* ── Live signal chart ───────────────────────────────────── */
+.live-signal-block {
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface2);
+}
+.live-sig-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 0.72rem; color: var(--muted); margin-bottom: 6px;
+}
+.live-signal-svg {
+  display: block; width: 100%; height: 64px;
+  background: rgba(0,0,0,0.15); border-radius: 4px;
+}
+
+/* Signal quality tags */
+.sig-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-left: auto; font-size: 0.68rem; font-weight: 700;
+  padding: 1px 8px; border-radius: 4px; border: 1px solid;
+}
+.sig-wait { color: var(--muted);   border-color: var(--border);              background: transparent; }
+.sig-good { color: #22d47e;        border-color: rgba(34,212,126,0.35);      background: rgba(34,212,126,0.08); }
+.sig-ok   { color: #f59e0b;        border-color: rgba(245,158,11,0.35);      background: rgba(245,158,11,0.08); }
+.sig-poor { color: #ef4444;        border-color: rgba(239,68,68,0.35);       background: rgba(239,68,68,0.08); }
 
 /* ── Params ─────────────────────────────────────────────── */
 .param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

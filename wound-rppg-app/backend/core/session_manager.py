@@ -150,6 +150,21 @@ def save_results(
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
 
+    # Keep DB in sync (best-effort — don't crash if DB unavailable)
+    try:
+        from .database import upsert_session
+        upsert_session(
+            session_name,
+            has_results = 1,
+            snr_db      = results.get("snr", {}).get("mean_snr"),
+            hr_bpm      = results.get("hr", {}).get("hr_bpm"),
+            score       = results.get("quality", {}).get("score"),
+            wound_pct   = results.get("wound_area", {}).get("pct") if results.get("wound_area") else None,
+            has_mask    = int(bool(results.get("has_mask"))),
+        )
+    except Exception:
+        pass
+
     return results_path
 
 
@@ -183,6 +198,13 @@ def save_mask(
     img_data = base64.b64decode(mask_b64)
     img = Image.open(io.BytesIO(img_data)).convert("L")
     img.save(mask_path, format="PNG")
+
+    try:
+        from .database import upsert_session
+        upsert_session(session_name, has_mask=1)
+    except Exception:
+        pass
+
     return mask_path
 
 
@@ -260,5 +282,11 @@ def save_scenario(
     }
     with open(scenario_path, "w") as f:
         json.dump(scenario, f, indent=2)
+
+    try:
+        from .database import upsert_session
+        upsert_session(session_name, scenario_label=label, scenario_zone=zone)
+    except Exception:
+        pass
 
 

@@ -2,7 +2,7 @@
 import logging
 import numpy as np
 from flask import Blueprint, jsonify, request
-from core.scenarios import analyze_session, analyze_roi, timeline
+from core.scenarios import analyze_session, analyze_roi, timeline, analyze_dual_roi
 from core.job_queue import submit, get_job
 from api.validation import reject_invalid_session
 
@@ -102,6 +102,92 @@ def pixel_pos(session_name):
         return jsonify(_ERR_500), 500
 
 
+@bp_analysis.post("/batch")
+def run_batch_analysis():
+    """
+    Body: { sessions: ["s1", "s2", ...], force: false }
+    Submits one background job per session and returns a list of job_ids.
+    """
+    data     = request.json or {}
+    sessions = data.get("sessions", [])
+    force    = data.get("force", False)
+    if not sessions:
+        return jsonify({"error": "Missing 'sessions' list."}), 400
+
+    jobs = []
+    for name in sessions:
+        err = reject_invalid_session(name)
+        if err:
+            jobs.append({"session": name, "error": "invalid name"})
+            continue
+        job_id = submit(analyze_session, name, force=force)
+        jobs.append({"session": name, "job_id": job_id, "status": "pending"})
+        log.info("batch job submitted session=%s job=%s", name, job_id)
+
+    return jsonify({"jobs": jobs}), 202
+
+
+@bp_analysis.post("/<session_name>/dual_roi")
+def dual_roi_endpoint(session_name):
+    """
+    Compare wound ROI vs healthy ROI.
+    Body: { roi_wound: [x,y,w,h], roi_healthy: [x,y,w,h] }
+    """
+    err = reject_invalid_session(session_name)
+    if err:
+        return err
+    data = request.json or {}
+    if "roi_wound" not in data or "roi_healthy" not in data:
+        return jsonify({"error": "Missing roi_wound or roi_healthy."}), 400
+    try:
+        result = analyze_dual_roi(
+            session_name,
+            tuple(data["roi_wound"]),
+            tuple(data["roi_healthy"]),
+        )
+        return jsonify(result)
+    except FileNotFoundError:
+        return jsonify({"error": "Session not found."}), 404
+    except Exception:
+        log.exception("dual_roi failed session=%s", session_name)
+        return jsonify(_ERR_500), 500
+
+
+@bp_analysis.post("/<session_name>/auto_segment")
+def auto_segment_endpoint(session_name):
+    """
+    Run Otsu auto-segmentation on the amplitude map from the last analysis.
+    Returns mask_b64, pct, n_pixels — user can then apply it as the mask.
+    """
+    err = reject_invalid_session(session_name)
+    if err:
+        return err
+    try:
+        from core.session_manager import load_results
+        from core.spatial_maps import auto_segment_mask
+        import base64, cv2
+
+        results = load_results(session_name)
+        amp_b64 = results.get("maps", {}).get("amplitude")
+        if not amp_b64:
+            return jsonify({"error": "No amplitude map — run analysis first."}), 400
+
+        raw  = base64.b64decode(amp_b64.split(",")[-1])
+        arr  = np.frombuffer(raw, np.uint8)
+        img  = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return jsonify({"error": "Could not decode amplitude map."}), 500
+
+        amp_float = img.astype(np.float32) / 255.0
+        seg = auto_segment_mask(amp_float)
+        return jsonify(seg)
+    except FileNotFoundError:
+        return jsonify({"error": "No results — run analysis first."}), 404
+    except Exception:
+        log.exception("auto_segment failed session=%s", session_name)
+        return jsonify(_ERR_500), 500
+
+
 @bp_analysis.get("/timeline")
 def get_timeline():
     """
@@ -118,6 +204,61 @@ def get_timeline():
         return jsonify(result)
     except Exception:
         log.exception("timeline failed zone=%s label=%s wound_id=%s", zone, label, wound_id)
+        return jsonify(_ERR_500), 500
+
+
+@bp_analysis.post("/<session_name>/zones")
+def zone_analysis_endpoint(session_name):
+    """
+    Zone-based analysis — divides frame into N×M zones.
+    Query params: n_rows (default 4), n_cols (default 4), surface (bool)
+    Optional body: { hr_hz: float }
+    Returns zones[] + grid_snr/amplitude/hr + optional surface3d data.
+    """
+    err = reject_invalid_session(session_name)
+    if err:
+        return err
+    n_rows  = request.args.get("n_rows", 4, type=int)
+    n_cols  = request.args.get("n_cols", 4, type=int)
+    surface = request.args.get("surface", "false").lower() == "true"
+    data    = request.json or {}
+    hr_hz   = data.get("hr_hz")
+    try:
+        from core.session_manager import load_session, load_results
+        from core.scenarios import _ANALYSIS_RESIZE
+        from core.zones import compute_zone_grid, zone_surface_3d
+
+        frames, meta = load_session(session_name, resize=_ANALYSIS_RESIZE)
+        fps = float(meta.get("measured_fps", 30))
+
+        # Try to load existing mask
+        mask = None
+        try:
+            res  = load_results(session_name)
+            maps = res.get("maps", {})
+            if maps.get("mask"):
+                import base64, cv2
+                raw  = base64.b64decode(maps["mask"].split(",")[-1])
+                arr  = np.frombuffer(raw, np.uint8)
+                gray = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+                if gray is not None:
+                    _, H, W, _ = frames.shape
+                    gray = cv2.resize(gray, (W, H), interpolation=cv2.INTER_NEAREST)
+                    mask = gray > 127
+        except Exception:
+            pass
+
+        result = compute_zone_grid(frames, fps, n_rows=n_rows, n_cols=n_cols,
+                                   mask=mask, hr_hz=hr_hz)
+        if surface:
+            n_surf = min(max(n_rows, n_cols) * 2, 12)
+            result["surface3d"] = zone_surface_3d(frames, fps, n_rows=n_surf, n_cols=n_surf,
+                                                  mask=mask, hr_hz=hr_hz)
+        return jsonify(result)
+    except FileNotFoundError:
+        return jsonify({"error": "Session not found."}), 404
+    except Exception:
+        log.exception("zone analysis failed session=%s", session_name)
         return jsonify(_ERR_500), 500
 
 

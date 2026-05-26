@@ -12,6 +12,7 @@ import {
   GridComponent, TooltipComponent, LegendComponent,
   MarkLineComponent, VisualMapComponent, DataZoomComponent,
 } from "echarts/components";
+import "echarts-gl";
 
 import "vuetify/styles";
 import "@mdi/font/css/materialdesignicons.css";

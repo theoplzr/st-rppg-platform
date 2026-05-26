@@ -21,6 +21,17 @@ from api.routes_analysis  import bp_analysis
 from api.routes_scenarios import bp_scenarios
 from api.routes_export    import bp_export
 from api.routes_upload    import bp_upload
+from api.routes_patients  import bp_patients
+
+from core.database import init_db, sync_sessions_from_filesystem
+
+# Initialise DB and sync existing filesystem sessions on startup
+try:
+    init_db()
+    sync_sessions_from_filesystem()
+    log.info("Database initialised")
+except Exception:
+    log.exception("Database init failed — continuing without DB")
 
 app = Flask(__name__)
 
@@ -75,6 +86,7 @@ app.register_blueprint(bp_analysis,  url_prefix="/api/analysis")
 app.register_blueprint(bp_scenarios, url_prefix="/api/scenarios")
 app.register_blueprint(bp_export,    url_prefix="/api/export")
 app.register_blueprint(bp_upload,    url_prefix="/api/upload")
+app.register_blueprint(bp_patients,  url_prefix="/api/patients")
 
 
 @app.route("/api/health")

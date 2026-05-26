@@ -139,6 +139,67 @@ def _corr_snr(corr_map: np.ndarray, snr_map: np.ndarray) -> np.ndarray:
     return (corr_map * snr_norm).astype(np.float32)
 
 
+# ─── Illumination (DC) map ────────────────────────────────────────────────────
+
+def dc_map(frames: np.ndarray) -> np.ndarray:
+    """
+    Mean green channel per pixel — shows spatial illumination distribution.
+    Useful to diagnose uneven lighting that biases amplitude maps.
+    frames : (N, H, W, 3) float32 [0,1]  →  (H, W) float32
+    """
+    return frames[:, :, :, 1].mean(axis=0).astype(np.float32)
+
+
+def amplitude_normalized(amp: np.ndarray, dc: np.ndarray) -> np.ndarray:
+    """
+    Normalize amplitude map by local DC illumination.
+    Makes the perfusion index comparable across sessions with different lighting.
+    """
+    return (amp / (dc + 1e-6)).astype(np.float32)
+
+
+def auto_segment_mask(amplitude_map: np.ndarray) -> dict:
+    """
+    Auto-segment the wound region using Otsu threshold on the amplitude map.
+    Returns a binary mask (H, W) bool and base64-encoded PNG for display.
+
+    Uses OpenCV Otsu threshold + morphological open/close to remove noise.
+    The high-amplitude region (above threshold) is assumed to correspond
+    to the best-perfused (wound) zone.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return {"error": "opencv-python not installed"}
+
+    amp_u8 = cv2.normalize(amplitude_map, None, 0, 255,
+                           cv2.NORM_MINMAX, cv2.CV_8U)
+    _, mask_u8 = cv2.threshold(amp_u8, 0, 255,
+                               cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Morphological cleanup
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN,  k3)
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, k5)
+
+    H, W = mask_u8.shape
+    n_px  = int((mask_u8 > 0).sum())
+    pct   = round(100.0 * n_px / (H * W), 2)
+
+    # Encode as base64 PNG for the frontend
+    img    = Image.fromarray(mask_u8, mode="L")
+    buf    = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64    = base64.b64encode(buf.getvalue()).decode()
+
+    return {
+        "mask_b64": f"data:image/png;base64,{b64}",
+        "n_pixels": n_px,
+        "pct":      pct,
+        "shape":    [H, W],
+    }
+
+
 # ─── All maps in one pass ──────────────────────────────────────────────────────
 
 def compute_all_maps(frames: np.ndarray, fps: float,
@@ -204,6 +265,11 @@ def _coherence_signed(local_pos: np.ndarray,
 
 
 # ─── Base64 PNG export ─────────────────────────────────────────────────────────
+
+COLORMAPS_EXTRA = {
+    "dc": "snr",
+    "amp_normalized": "perfusion",
+}
 
 COLORMAPS = {
     "perfusion": [
@@ -275,11 +341,13 @@ def map_to_base64(data: np.ndarray, cmap_name: str = "perfusion",
 
 def maps_to_base64_dict(maps: dict, size: tuple = (256, 256)) -> dict:
     cmap_names = {
-        "amplitude": "perfusion",
-        "phase":     "phase",
-        "snr":       "snr",
-        "coherence": "coherence",
-        "corr_snr":  "corr_snr",
+        "amplitude":      "perfusion",
+        "phase":          "phase",
+        "snr":            "snr",
+        "coherence":      "coherence",
+        "corr_snr":       "corr_snr",
+        "dc":             "snr",
+        "amp_normalized": "perfusion",
     }
     return {
         key: map_to_base64(maps[key], cmap, size)

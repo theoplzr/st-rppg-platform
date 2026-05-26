@@ -5,11 +5,15 @@ rPPG signal quality metrics:
   - Heart rate estimation (FFT)
   - Sliding SNR
   - TMS (Template Matching Score)
+  - Respiratory rate from green channel
+  - HRV (SDNN, RMSSD, pNN50)
+  - Motion artifact detection (inter-frame diff)
+  - STFT spectrogram
   - Global quality score
 """
 
 import numpy as np
-from scipy.signal import find_peaks, welch
+from scipy.signal import find_peaks, welch, stft as scipy_stft, butter, filtfilt
 from scipy.stats import pearsonr
 
 
@@ -176,6 +180,166 @@ def compute_tms(signal: np.ndarray, fps: float,
     }
 
 
+# ─── Respiratory rate ──────────────────────────────────────────────────────────
+
+def estimate_respiratory_rate(rgb_signal: np.ndarray, fps: float,
+                               low_hz: float = 0.15,
+                               high_hz: float = 0.50) -> dict:
+    """
+    Estimate respiratory rate from the low-frequency component of the green
+    channel.  Typical range: 0.15–0.50 Hz (9–30 breaths/min).
+    rgb_signal : (N, 3) mean RGB per frame
+    """
+    if rgb_signal is None or rgb_signal.ndim != 2:
+        return {"rr_bpm": None, "rr_hz": None}
+
+    g = rgb_signal[:, 1].astype(np.float64)
+    g -= g.mean()
+
+    nyq = fps / 2.0
+    lo  = max(low_hz  / nyq, 1e-4)
+    hi  = min(high_hz / nyq, 1 - 1e-4)
+    b, a = butter(3, [lo, hi], btype="bandpass")
+    try:
+        g_resp = filtfilt(b, a, g)
+    except Exception:
+        return {"rr_bpm": None, "rr_hz": None}
+
+    N    = len(g_resp)
+    win  = np.hanning(N)
+    fft  = np.abs(np.fft.rfft(g_resp * win)) ** 2
+    freq = np.fft.rfftfreq(N, d=1.0 / fps)
+    mask = (freq >= low_hz) & (freq <= high_hz)
+    if not np.any(mask):
+        return {"rr_bpm": None, "rr_hz": None}
+
+    rr_hz  = float(freq[mask][np.argmax(fft[mask])])
+    rr_bpm = round(rr_hz * 60.0, 1)
+    return {
+        "rr_bpm": rr_bpm,
+        "rr_hz":  round(rr_hz, 4),
+        "signal": g_resp.tolist(),
+    }
+
+
+# ─── HRV — Heart Rate Variability ─────────────────────────────────────────────
+
+def compute_hrv(signal_filt: np.ndarray, fps: float, hr_hz: float) -> dict:
+    """
+    HRV from detected PPG peaks: SDNN, RMSSD, pNN50.
+    Requires at least 5 peaks for meaningful estimates.
+    """
+    if hr_hz is None or hr_hz <= 0:
+        return {"sdnn_ms": None, "rmssd_ms": None, "pnn50": None, "n_peaks": 0}
+
+    min_dist = int(fps / hr_hz * 0.6)
+    norm = signal_filt / (np.abs(signal_filt).max() + 1e-8)
+    peaks, _ = find_peaks(norm, distance=min_dist, height=0.15)
+
+    if len(peaks) < 5:
+        return {"sdnn_ms": None, "rmssd_ms": None, "pnn50": None, "n_peaks": len(peaks)}
+
+    rr_s    = np.diff(peaks) / fps              # RR intervals in seconds
+    rr_ms   = rr_s * 1000.0                     # convert to ms
+
+    sdnn    = float(np.std(rr_ms))
+    rmssd   = float(np.sqrt(np.mean(np.diff(rr_ms) ** 2)))
+    pnn50   = float(100.0 * np.sum(np.abs(np.diff(rr_ms)) > 50) / len(rr_ms))
+
+    return {
+        "sdnn_ms":  round(sdnn,  1),
+        "rmssd_ms": round(rmssd, 1),
+        "pnn50":    round(pnn50, 1),
+        "n_peaks":  len(peaks),
+        "rr_ms":    rr_ms.tolist(),
+    }
+
+
+# ─── Motion artifact detection ────────────────────────────────────────────────
+
+def detect_motion_artifacts(frames: np.ndarray,
+                             threshold_sigma: float = 2.5) -> dict:
+    """
+    Detect motion-corrupted frames via inter-frame absolute difference on the
+    green channel.  Frames whose diff > mean + threshold_sigma × std are flagged.
+
+    frames : (N, H, W, 3) float32 [0, 1]
+    Returns: bad_frames (list of int indices), pct_bad, severity label,
+             diff_signal for display.
+    """
+    if frames.ndim != 4 or frames.shape[0] < 2:
+        return {"bad_frames": [], "pct_bad": 0.0, "severity": "none", "diff": []}
+
+    green   = frames[:, :, :, 1]                        # (N, H, W)
+    diff    = np.abs(np.diff(green, axis=0)).mean(axis=(1, 2))   # (N-1,)
+    mu, sigma = diff.mean(), diff.std()
+    thr     = mu + threshold_sigma * sigma
+
+    bad_idx = np.where(diff > thr)[0].tolist()          # frame index (0-based)
+    pct_bad = round(100.0 * len(bad_idx) / len(diff), 1)
+
+    if pct_bad == 0:
+        severity = "none"
+    elif pct_bad < 5:
+        severity = "low"
+    elif pct_bad < 15:
+        severity = "moderate"
+    else:
+        severity = "high"
+
+    return {
+        "bad_frames": bad_idx,
+        "n_bad":      len(bad_idx),
+        "pct_bad":    pct_bad,
+        "severity":   severity,
+        "threshold":  round(float(thr), 6),
+        "diff":       diff.tolist(),
+    }
+
+
+# ─── STFT Spectrogram ─────────────────────────────────────────────────────────
+
+def compute_stft(signal_filt: np.ndarray, fps: float,
+                 nperseg_sec: float = 8.0,
+                 noverlap_ratio: float = 0.875,
+                 max_hz: float = 4.0) -> dict:
+    """
+    Short-Time Fourier Transform of the POS signal.
+    Returns time/freq/power arrays downsampled for JSON transfer.
+
+    nperseg_sec=8 → 8-second window (same as SNR window, ~10 cycles at 75 bpm).
+    noverlap_ratio=0.875 → 87.5% overlap for smooth time resolution.
+    """
+    nperseg  = min(int(nperseg_sec * fps), len(signal_filt))
+    noverlap = int(nperseg * noverlap_ratio)
+    nfft     = max(nperseg, 256)
+
+    f, t, Zxx = scipy_stft(
+        signal_filt.astype(np.float64),
+        fs=fps,
+        window="hann",
+        nperseg=nperseg,
+        noverlap=noverlap,
+        nfft=nfft,
+    )
+
+    # Keep only cardiac-relevant frequencies (0.3 – max_hz Hz)
+    freq_mask = (f >= 0.3) & (f <= max_hz)
+    f_crop = f[freq_mask]
+    power  = np.abs(Zxx[freq_mask]) ** 2
+
+    # Log-scale power, clip for display
+    log_power = 10.0 * np.log10(power + 1e-12)
+    p2, p98   = np.percentile(log_power, 2), np.percentile(log_power, 98)
+    log_norm  = np.clip((log_power - p2) / (p98 - p2 + 1e-8), 0.0, 1.0)
+
+    return {
+        "time":     [round(float(v), 3) for v in t],
+        "freq":     [round(float(v), 4) for v in f_crop],
+        "power":    log_norm.tolist(),
+    }
+
+
 # ─── Global quality score ──────────────────────────────────────────────────────
 
 def quality_score(mean_snr: float, tms: float, fps: float) -> dict:
@@ -218,22 +382,67 @@ def quality_score(mean_snr: float, tms: float, fps: float) -> dict:
     }
 
 
+# ─── Bootstrap confidence intervals ──────────────────────────────────────────
+
+def bootstrap_ci(signal_filt: np.ndarray, fps: float,
+                 win_sec: float = 8.0,
+                 n_boot: int = 60,
+                 ci_pct: float = 95.0) -> dict | None:
+    """
+    Window-bootstrap CI for HR estimation.
+    Estimates HR from n_boot random sub-windows of the signal and returns
+    mean ± confidence interval, which reflects temporal HR stability.
+    """
+    L       = len(signal_filt)
+    win_len = min(int(win_sec * fps), L)
+    if win_len < 32 or L < win_len:
+        return None
+
+    rng      = np.random.default_rng(0)
+    boot_hrs = []
+    for _ in range(n_boot):
+        start = int(rng.integers(0, L - win_len + 1))
+        win   = signal_filt[start: start + win_len]
+        info  = estimate_hr_fft(win, fps)
+        hr    = info.get("hr_bpm")
+        if hr:
+            boot_hrs.append(hr)
+
+    if len(boot_hrs) < 5:
+        return None
+
+    alpha = (100.0 - ci_pct) / 2.0
+    hrs   = np.array(boot_hrs)
+    return {
+        "hr_mean":   round(float(hrs.mean()), 1),
+        "hr_std":    round(float(hrs.std()),  1),
+        "hr_ci_lo":  round(float(np.percentile(hrs, alpha)),         1),
+        "hr_ci_hi":  round(float(np.percentile(hrs, 100.0 - alpha)), 1),
+        "n_windows": len(boot_hrs),
+        "ci_pct":    ci_pct,
+    }
+
+
 # ─── Full quality report ───────────────────────────────────────────────────────
 
 def full_quality_report(signal_raw: np.ndarray,
                         signal_filt: np.ndarray,
                         fps: float,
-                        rgb_signal: np.ndarray = None) -> dict:
+                        rgb_signal: np.ndarray = None,
+                        frames: np.ndarray = None) -> dict:
     """
     Full quality report from the filtered POS signal.
     Returns a JSON-serializable dict.
     """
-    hr_info  = estimate_hr_fft(signal_filt, fps)
-    hr_hz    = hr_info.get("hr_hz") or 1.2
+    hr_info   = estimate_hr_fft(signal_filt, fps)
+    hr_hz     = hr_info.get("hr_hz") or 1.2
 
-    snr_info = compute_snr_sliding(signal_filt, fps, hr_hz)
-    tms_info = compute_tms(signal_filt, fps, hr_hz)
-    qual     = quality_score(snr_info["mean_snr"], tms_info["tms"], fps)
+    snr_info  = compute_snr_sliding(signal_filt, fps, hr_hz)
+    tms_info  = compute_tms(signal_filt, fps, hr_hz)
+    qual      = quality_score(snr_info["mean_snr"], tms_info["tms"], fps)
+    hrv_info  = compute_hrv(signal_filt, fps, hr_hz)
+    stft_info = compute_stft(signal_filt, fps)
+    ci_info   = bootstrap_ci(signal_filt, fps)
 
     # Peak detection on normalized signal
     peaks, _ = find_peaks(signal_filt / (np.abs(signal_filt).max() + 1e-8),
@@ -251,6 +460,9 @@ def full_quality_report(signal_raw: np.ndarray,
         "snr":     snr_info,
         "tms":     tms_info,
         "quality": qual,
+        "hrv":     hrv_info,
+        "stft":    stft_info,
+        "hr_ci":   ci_info,
         "signal": {
             "raw":   raw_norm,
             "filt":  sig_norm,
@@ -260,9 +472,13 @@ def full_quality_report(signal_raw: np.ndarray,
     }
 
     if rgb_signal is not None:
+        report["respiration"] = estimate_respiratory_rate(rgb_signal, fps)
         for ch, name in enumerate(["R", "G", "B"]):
             ch_sig  = rgb_signal[:, ch].astype(float)
             ch_norm = (ch_sig - ch_sig.mean()) / (ch_sig.std() + 1e-8)
             report[f"rgb_{name}"] = ch_norm.tolist()
+
+    if frames is not None:
+        report["motion"] = detect_motion_artifacts(frames)
 
     return report

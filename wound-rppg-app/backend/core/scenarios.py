@@ -2,9 +2,16 @@ import json
 import numpy as np
 from pathlib import Path
 
-from .pos_algorithm import pos_wang2017_raw, pos_filtered, pos_signal, spatial_average
+from .pos_algorithm import (
+    pos_wang2017_raw, pos_filtered, pos_signal, spatial_average,
+    chrom_filtered, chrom_signal,
+    lgi_filtered,
+)
 from .signal_quality import full_quality_report
-from .spatial_maps import compute_all_maps, maps_to_base64_dict, roi_stats
+from .spatial_maps import (
+    compute_all_maps, maps_to_base64_dict, roi_stats,
+    dc_map, amplitude_normalized,
+)
 from .ai_interpretation import interpret_results
 from .session_manager import (
     load_session,
@@ -23,6 +30,38 @@ def _round_or_zero(value, digits=2):
         return round(float(value), digits)
     except (TypeError, ValueError):
         return 0
+
+
+def _compute_healing_score(snr_db: float, amplitude: float,
+                           wound_pct: float = None) -> dict:
+    """
+    Composite perfusion/healing score 0–100.
+    Components:
+      SNR    — up to 40 pts  (SNR ≥ 10 dB = full score)
+      Amp    — up to 35 pts  (RMS amplitude ≥ 0.035 = full score)
+      Coverage — up to 25 pts (wound mask ≥ 25% of frame = full score; 15 if unknown)
+    """
+    s_snr  = float(np.clip((snr_db / 10.0) * 40.0, 0.0, 40.0))
+    s_amp  = float(np.clip((amplitude / 0.035) * 35.0, 0.0, 35.0))
+    if wound_pct is not None:
+        s_cov = float(np.clip((wound_pct / 25.0) * 25.0, 0.0, 25.0))
+    else:
+        s_cov = 15.0   # neutral when no mask
+    total = round(s_snr + s_amp + s_cov, 1)
+    if total >= 75:
+        label, color = "Bonne perfusion", "#22d47e"
+    elif total >= 45:
+        label, color = "Perfusion modérée", "#f59e0b"
+    else:
+        label, color = "Perfusion faible", "#ef4444"
+    return {
+        "score":   total,
+        "label":   label,
+        "color":   color,
+        "s_snr":   round(s_snr, 1),
+        "s_amp":   round(s_amp, 1),
+        "s_cov":   round(s_cov, 1),
+    }
 
 
 def _load_scenario(session_name: str, sessions_root: Path = None) -> dict:
@@ -85,8 +124,33 @@ def analyze_session(session_name: str, sessions_root: Path = None,
     filt_bp   = pos_filtered(rgb, fps)    # pour les métriques (amplitude préservée)
     filt_norm = pos_signal(rgb, fps)      # normalisé Hilbert pour les cartes
 
-    report = full_quality_report(raw, filt_bp, fps, rgb_signal=rgb)
+    report = full_quality_report(raw, filt_bp, fps,
+                                 rgb_signal=rgb, frames=masked_frames)
     hr_hz  = report["hr"]["hr_hz"] or 1.2
+
+    # ── CHROM + LGI algorithm comparison ─────────────────────────────────────
+    from .signal_quality import estimate_hr_fft, compute_snr_sliding
+
+    def _algo_metrics(sig_bp):
+        _hr  = estimate_hr_fft(sig_bp, fps)
+        _snr = compute_snr_sliding(sig_bp, fps, _hr.get("hr_hz") or hr_hz)
+        _max = float(np.abs(sig_bp).max()) + 1e-8
+        return {
+            "hr_bpm": _hr.get("hr_bpm"),
+            "snr_db": _snr.get("mean_snr"),
+            "signal": (sig_bp / _max).tolist(),
+        }
+
+    report["chrom"] = _algo_metrics(chrom_filtered(rgb, fps))
+    report["lgi"]   = _algo_metrics(lgi_filtered(rgb, fps))
+
+    # ── Composite healing score ───────────────────────────────────────────────
+    _snr_val  = report.get("snr", {}).get("mean_snr") or 0.0
+    _amp_val  = float(np.sqrt(np.mean(filt_bp ** 2)))   # RMS amplitude
+    _wpct     = None
+    if mask_2d is not None:
+        _wpct = 100.0 * int(mask_2d.sum()) / max(int(mask_2d.size), 1)
+    report["healing_score"] = _compute_healing_score(_snr_val, _amp_val, _wpct)
 
     # ── Sous-échantillonnage pour les cartes spatiales (max 300 frames) ───────
     _MAP_MAX_FRAMES = 300
@@ -100,16 +164,32 @@ def analyze_session(session_name: str, sessions_root: Path = None,
         map_frames = masked_frames
         map_signal = filt_norm
 
-    maps      = compute_all_maps(map_frames, fps, hr_hz, filt_signal=map_signal)
-    maps_b64  = maps_to_base64_dict(maps, size=(256, 256))
+    maps     = compute_all_maps(map_frames, fps, hr_hz, filt_signal=map_signal)
+    dc       = dc_map(map_frames)
+    maps["dc"]             = dc
+    maps["amp_normalized"] = amplitude_normalized(maps["amplitude"], dc)
+    maps_b64 = maps_to_base64_dict(maps, size=(256, 256))
 
     amp_stats = roi_stats(maps["amplitude"])
+
+    # ── Wound area from mask ──────────────────────────────────────────────────
+    wound_area = None
+    if mask_2d is not None:
+        n_wound = int(mask_2d.sum())
+        n_total = int(mask_2d.size)
+        wound_area = {
+            "pixels":  n_wound,
+            "total":   n_total,
+            "pct":     round(100.0 * n_wound / max(n_total, 1), 2),
+        }
+
     results = {
         "session_name": session_name,
         "meta":         meta,
         "fps":          fps,
         "n_frames":     len(frames),
         "has_mask":     mask_2d is not None,
+        "wound_area":   wound_area,
         **report,
         "maps":         maps_b64,
         "amp_stats":    amp_stats,
@@ -167,6 +247,52 @@ def analyze_roi(session_name: str, roi: tuple, label: str = "roi",
     return report
 
 
+def analyze_dual_roi(session_name: str,
+                     roi_wound: tuple, roi_healthy: tuple,
+                     sessions_root: Path = None) -> dict:
+    """
+    Compare wound ROI vs healthy skin ROI side-by-side.
+    roi_wound / roi_healthy : (x, y, w, h) in analysis-resize coordinates.
+    Returns both reports + perfusion ratio (wound_amp / healthy_amp).
+    """
+    root = sessions_root or SESSIONS_DIR
+    frames, meta = load_session(session_name, sessions_root=root,
+                                resize=_ANALYSIS_RESIZE)
+    fps = float(meta.get("measured_fps", 30))
+
+    def _roi_report(roi):
+        x, y, w, h = roi
+        roi_f  = frames[:, y:y + h, x:x + w, :]
+        rgb    = spatial_average(roi_f)
+        raw    = pos_wang2017_raw(rgb, fps)
+        filt   = pos_filtered(rgb, fps)
+        return full_quality_report(raw, filt, fps, rgb_signal=rgb)
+
+    rep_wound   = _roi_report(roi_wound)
+    rep_healthy = _roi_report(roi_healthy)
+
+    amp_w = rep_wound.get("amp_stats", {}).get("mean", 0) or \
+            float(np.abs(np.array(rep_wound["signal"]["filt"])).mean())
+    amp_h = rep_healthy.get("amp_stats", {}).get("mean", 0) or \
+            float(np.abs(np.array(rep_healthy["signal"]["filt"])).mean())
+
+    ratio = round(amp_w / (amp_h + 1e-8), 3)
+
+    return {
+        "wound":         {**rep_wound,   "roi": dict(zip("xywh", roi_wound))},
+        "healthy":       {**rep_healthy, "roi": dict(zip("xywh", roi_healthy))},
+        "perfusion_ratio": ratio,
+        "hr_diff_bpm": round(
+            (rep_wound["hr"].get("hr_bpm") or 0) -
+            (rep_healthy["hr"].get("hr_bpm") or 0), 1
+        ),
+        "snr_diff_db": round(
+            (rep_wound["snr"].get("mean_snr") or 0) -
+            (rep_healthy["snr"].get("mean_snr") or 0), 2
+        ),
+    }
+
+
 def timeline(zone: str = None, label: str = None,
              wound_id: str = None,
              sessions_root: Path = None) -> dict:
@@ -204,14 +330,17 @@ def timeline(zone: str = None, label: str = None,
             r = json.load(f)
 
         points.append({
-            "name":    session_dir.name,
-            "date":    r.get("meta", {}).get("date", ""),
-            "snr_db":  _round_or_zero(r.get("snr", {}).get("mean_snr"), 2),
-            "hr_bpm":  _round_or_zero(r.get("hr", {}).get("hr_bpm"), 1),
-            "tms":     _round_or_zero(r.get("tms", {}).get("tms"), 4),
-            "score":   int(r.get("quality", {}).get("score", 0) or 0),
-            "amp_mean":_round_or_zero(r.get("amp_stats", {}).get("mean"), 4),
-            "scenario": scenario,
+            "name":       session_dir.name,
+            "date":       r.get("meta", {}).get("date", ""),
+            "snr_db":     _round_or_zero(r.get("snr", {}).get("mean_snr"), 2),
+            "hr_bpm":     _round_or_zero(r.get("hr", {}).get("hr_bpm"), 1),
+            "tms":        _round_or_zero(r.get("tms", {}).get("tms"), 4),
+            "score":      int(r.get("quality", {}).get("score", 0) or 0),
+            "amp_mean":   _round_or_zero(r.get("amp_stats", {}).get("mean"), 4),
+            "wound_pct":  _round_or_zero(r.get("wound_area", {}).get("pct") if r.get("wound_area") else None, 2),
+            "rr_bpm":     _round_or_zero(r.get("respiration", {}).get("rr_bpm"), 1),
+            "has_mask":   bool(r.get("has_mask", False)),
+            "scenario":   scenario,
         })
 
     points.sort(key=lambda p: p["date"])

@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 from flask import Blueprint, jsonify, request
 from core.session_manager import SESSIONS_DIR
+from core.database import upsert_session
 
 log = logging.getLogger(__name__)
 bp_upload = Blueprint("upload", __name__)
@@ -74,6 +75,15 @@ def _handle_zip(f) -> tuple:
         return jsonify({"error": "No valid session extracted from ZIP."}), 422
 
     log.info("ZIP uploaded: %s (%.1f MB)", sessions, size_mb)
+    # Sync to DB
+    for sname in sessions:
+        try:
+            meta_path = SESSIONS_DIR / sname / "metadata.json"
+            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+            upsert_session(sname, date=meta.get("date"), fps=meta.get("measured_fps"),
+                           nb_frames=meta.get("nb_frames"))
+        except Exception:
+            log.warning("DB sync skipped for %s", sname)
     return jsonify({"ok": True, "sessions": sessions, "size_mb": round(size_mb, 1)}), 201
 
 
@@ -124,6 +134,10 @@ def _handle_avi(f, filename: str) -> tuple:
 
         size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
         log.info("AVI converted: %s — %d frames @ %.1f fps (%.1f MB)", session_name, idx, fps, size_mb)
+        try:
+            upsert_session(session_name, date=meta["date"], fps=fps, nb_frames=idx)
+        except Exception:
+            log.warning("DB sync skipped for %s", session_name)
         return jsonify({"ok": True, "sessions": [session_name], "size_mb": round(size_mb, 1)}), 201
 
     except Exception:

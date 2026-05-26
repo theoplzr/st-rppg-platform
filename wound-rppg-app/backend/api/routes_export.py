@@ -124,3 +124,28 @@ def export_csv(session_name):
     return send_file(out, mimetype="text/csv",
                      download_name=f"{session_name}_metrics.csv",
                      as_attachment=True)
+
+
+@bp_export.get("/<session_name>/pdf")
+def export_pdf(session_name):
+    """Generate and download a clinical PDF report for the session."""
+    err = reject_invalid_session(session_name)
+    if err:
+        return err
+    try:
+        from core.pdf_report import generate_pdf
+        results = load_results(session_name)
+        pdf_bytes = generate_pdf(session_name, results)
+        buf = io.BytesIO(pdf_bytes)
+        buf.seek(0)
+        return send_file(
+            buf,
+            mimetype="application/pdf",
+            download_name=f"{session_name}_report.pdf",
+            as_attachment=True,
+        )
+    except FileNotFoundError:
+        return jsonify({"error": "Results not found — run analysis first."}), 404
+    except Exception:
+        log.exception("export_pdf failed session=%s", session_name)
+        return jsonify(_ERR_500), 500

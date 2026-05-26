@@ -1,19 +1,23 @@
 """
 core/pos_algorithm.py
 ─────────────────────
-POS (Plane-Orthogonal-to-Skin) — Wang et al., IEEE TBME 2017.
-Ported directly from dataset_builder_v2_k.ipynb (verified implementation).
+rPPG algorithms:
+  POS   — Wang et al., IEEE TBME 2017
+  CHROM — de Haan & Jeanne, IEEE TBME 2013
+  LGI   — Pilz et al., CVPRW 2018
 
 Public API
 ----------
 pos_wang2017_raw(RGB, fps)          → raw accumulated signal (N,)
 pos_signal(RGB, fps)                → raw + detrend + bandpass + Hilbert norm (N,)
-pos_local(frames, fps)              → per-pixel POS (N, H, W)  for spatial maps
+pos_local(frames, fps)              → per-pixel POS (N, H, W) for spatial maps
+chrom_signal(RGB, fps)              → CHROM filtered + Hilbert-normalised (N,)
+chrom_filtered(RGB, fps)            → CHROM + detrend + bandpass only (amplitude preserved)
+lgi_filtered(RGB, fps)              → LGI + detrend + bandpass (amplitude preserved)
+lgi_signal(RGB, fps)                → LGI + Hilbert-normalised (N,)
 bandpass_filter(signal, fps)        → zero-phase Butterworth bandpass
 spatial_average(frames)             → temporal RGB mean (N, 3)
 hr_from_signal(sig, fps)            → dominant HR in BPM (float)
-
-pos_algorithm                       → alias → pos_wang2017_raw (backward compat)
 """
 
 import math
@@ -120,6 +124,105 @@ def pos_local(RGB_tensor: np.ndarray, fps: float,
     Hb   = scipy_signal.filtfilt(b, a, Hb, axis=0)
     env  = np.abs(scipy_signal.hilbert(Hb, axis=0)) + _EPS
     return (Hb / env).astype(np.float32)
+
+
+# ── CHROM — de Haan & Jeanne, IEEE TBME 2013 ──────────────────────────────────
+
+def chrom_filtered(RGB: np.ndarray, fps: float,
+                   win_sec: float = 1.6,
+                   bp_low:  float = 0.70,
+                   bp_high: float = 3.0) -> np.ndarray:
+    """
+    CHROM raw signal with detrend + bandpass (amplitude preserved).
+    Uses chrominance channels to separate blood-volume pulse from illumination.
+
+    Xs = 3R − 2G
+    Ys = 1.5R + G − 1.5B
+    alpha = std(Xs) / std(Ys)  (per sliding window)
+    H += Xs − alpha·Ys
+    """
+    RGB = np.asarray(RGB, dtype=np.float64)
+    N   = RGB.shape[0]
+    l   = max(math.ceil(win_sec * fps), 4)
+    H   = np.zeros(N, dtype=np.float64)
+
+    for m in range(N - l + 1):
+        win = RGB[m:m + l, :]
+        mu  = win.mean(axis=0, keepdims=True) + _EPS
+        Cn  = win / mu                                  # (l, 3)
+        R, G, B = Cn[:, 0], Cn[:, 1], Cn[:, 2]
+        Xs = 3.0 * R - 2.0 * G
+        Ys = 1.5 * R + G - 1.5 * B
+        alpha  = (np.std(Xs) + _EPS) / (np.std(Ys) + _EPS)
+        h      = Xs - alpha * Ys
+        H[m:m + l] += h - h.mean()
+
+    H    = scipy_signal.detrend(H, type="linear")
+    nyq  = fps / 2.0
+    lo   = float(np.clip(bp_low  / nyq, 1e-6, 1 - 1e-6))
+    hi   = float(np.clip(bp_high / nyq, 1e-6, 1 - 1e-6))
+    b, a = scipy_signal.butter(2, [lo, hi], btype="bandpass")
+    H    = scipy_signal.filtfilt(b, a, H)
+    return H.astype(np.float32)
+
+
+def chrom_signal(RGB: np.ndarray, fps: float,
+                 win_sec: float = 1.6,
+                 bp_low:  float = 0.70,
+                 bp_high: float = 3.0) -> np.ndarray:
+    """CHROM + Hilbert envelope normalization (for spatial coherence maps)."""
+    H   = chrom_filtered(RGB, fps, win_sec, bp_low, bp_high)
+    env = np.abs(scipy_signal.hilbert(H)) + _EPS
+    return (H / env).astype(np.float32)
+
+
+# ── LGI — Pilz et al., CVPRW 2018 ─────────────────────────────────────────────
+
+def lgi_filtered(RGB: np.ndarray, fps: float,
+                 win_sec: float = 1.6,
+                 bp_low:  float = 0.70,
+                 bp_high: float = 3.0) -> np.ndarray:
+    """
+    LGI — Local Group Invariance (Pilz et al. 2018).
+    Separates rPPG from illumination using PCA on normalised RGB windows.
+
+    For each window: normalise by channel mean → covariance → project onto
+    the second eigenvector (first = illumination, second = blood-volume pulse).
+    Robust for darker skin tones compared to POS / CHROM.
+    """
+    RGB = np.asarray(RGB, dtype=np.float64)
+    N   = RGB.shape[0]
+    l   = max(math.ceil(win_sec * fps), 4)
+    H   = np.zeros(N, dtype=np.float64)
+
+    for m in range(N - l + 1):
+        win = RGB[m:m + l, :]
+        mu  = win.mean(axis=0, keepdims=True) + _EPS
+        Cn  = win / mu                              # channel normalisation
+        Cc  = Cn - Cn.mean(axis=0, keepdims=True)  # mean-centre
+        cov = (Cc.T @ Cc) / l                       # 3×3 covariance
+        _, evec = np.linalg.eigh(cov)              # eigenvalues ascending
+        # evec[:,2] = largest (illumination), evec[:,1] = 2nd (pulse)
+        h = Cc @ evec[:, 1]
+        H[m:m + l] += h - h.mean()
+
+    H    = scipy_signal.detrend(H, type="linear")
+    nyq  = fps / 2.0
+    lo   = float(np.clip(bp_low  / nyq, 1e-6, 1 - 1e-6))
+    hi   = float(np.clip(bp_high / nyq, 1e-6, 1 - 1e-6))
+    b, a = scipy_signal.butter(2, [lo, hi], btype="bandpass")
+    H    = scipy_signal.filtfilt(b, a, H)
+    return H.astype(np.float32)
+
+
+def lgi_signal(RGB: np.ndarray, fps: float,
+               win_sec: float = 1.6,
+               bp_low:  float = 0.70,
+               bp_high: float = 3.0) -> np.ndarray:
+    """LGI + Hilbert envelope normalisation (uniform amplitude for spatial maps)."""
+    H   = lgi_filtered(RGB, fps, win_sec, bp_low, bp_high)
+    env = np.abs(scipy_signal.hilbert(H)) + _EPS
+    return (H / env).astype(np.float32)
 
 
 # ── HR estimation ──────────────────────────────────────────────────────────────

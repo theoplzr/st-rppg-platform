@@ -47,6 +47,7 @@ const navItems = [
   { to: "/",          label: "Dashboard"   },
   { to: "/acquire",   label: "Acquisition" },
   { to: "/sessions",  label: "Sessions"    },
+  { to: "/patients",  label: "Patients"    },
   { to: "/scenarios", label: "Scénarios"   },
   { to: "/report",    label: "Rapport"     },
 ];

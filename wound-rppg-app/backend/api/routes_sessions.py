@@ -16,7 +16,24 @@ _ERR_500 = {"error": "Internal error. Check server logs."}
 @bp_sessions.get("/")
 def get_sessions():
     try:
-        return jsonify(list_sessions())
+        sessions = list_sessions()
+        try:
+            from core.database import list_sessions_db
+            db_index = {r["name"]: r for r in list_sessions_db()}
+            for s in sessions:
+                db = db_index.get(s["name"], {})
+                s["patient_id"]     = db.get("patient_id")
+                s["patient_name"]   = db.get("patient_name")
+                s["score"]          = db.get("score")
+                s["snr_db"]         = db.get("snr_db")
+                s["hr_bpm"]         = db.get("hr_bpm")
+                s["wound_pct"]      = db.get("wound_pct")
+                s["wound_id"]       = db.get("wound_id")
+                s["scenario_label"] = db.get("scenario_label") or s.get("scenario", {}).get("label")
+                s["has_mask"]       = bool(db.get("has_mask", 0))
+        except Exception:
+            log.warning("DB enrichment skipped in list_sessions")
+        return jsonify(sessions)
     except Exception:
         log.exception("list_sessions failed")
         return jsonify(_ERR_500), 500
@@ -104,6 +121,11 @@ def delete_session_mask(session_name):
     if mask_path.exists():
         os.remove(mask_path)
         log.info("mask deleted session=%s", session_name)
+    try:
+        from core.database import upsert_session
+        upsert_session(session_name, has_mask=0)
+    except Exception:
+        pass
     return jsonify({"ok": True})
 
 

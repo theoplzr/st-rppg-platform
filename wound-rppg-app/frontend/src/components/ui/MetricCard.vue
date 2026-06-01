@@ -1,6 +1,5 @@
 <template>
   <div class="metric-card" :style="{ '--c': color }">
-    <!-- Ambient glow from the color -->
     <div class="metric-glow" />
     <div class="metric-top">
       <div class="metric-icon">
@@ -27,23 +26,21 @@ defineProps({
 
 <style scoped>
 .metric-card {
-  background: #080810;
-  border: 1px solid #1a1a2e;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 16px;
   padding: 20px 22px 16px;
   position: relative;
   overflow: hidden;
-  transition: border-color 0.25s, box-shadow 0.25s, transform 0.15s;
+  transition: border-color 0.25s, box-shadow 0.25s, transform 0.15s, background 0.3s;
   cursor: default;
 }
 .metric-card:hover {
   border-color: color-mix(in srgb, var(--c, #e8622a) 35%, transparent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--c, #e8622a) 10%, transparent),
-              0 12px 32px rgba(0,0,0,0.5);
+              0 12px 32px var(--shadow);
   transform: translateY(-2px);
 }
-
-/* Ambient glow from the accent color */
 .metric-glow {
   position: absolute;
   top: -30px;
@@ -53,11 +50,8 @@ defineProps({
   background: radial-gradient(ellipse, color-mix(in srgb, var(--c, #e8622a) 20%, transparent) 0%, transparent 70%);
   pointer-events: none;
 }
-
-.metric-top {
-  margin-bottom: 16px;
-}
-.metric-icon {
+.metric-top   { margin-bottom: 16px; }
+.metric-icon  {
   width: 32px;
   height: 32px;
   border-radius: 8px;

@@ -80,6 +80,51 @@
         </v-col>
       </v-row>
 
+      <!-- Healing timeline -->
+      <template v-if="trendStats">
+        <div class="section-title mt-5 mb-3">
+          <v-icon size="12" color="#e8622a" style="margin-right:5px">mdi-chart-timeline-variant</v-icon>
+          Timeline de guérison
+        </div>
+
+        <v-row class="mb-3">
+          <v-col cols="6" sm="3">
+            <div class="tl-stat">
+              <div class="tl-stat-label">Sessions analysées</div>
+              <div class="tl-stat-value">{{ trendStats.count }}</div>
+            </div>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <div class="tl-stat">
+              <div class="tl-stat-label">Score initial → actuel</div>
+              <div class="tl-stat-value" :style="{ color: trendStats.delta > 5 ? 'var(--green)' : trendStats.delta < -5 ? 'var(--danger)' : 'var(--text)' }">
+                {{ trendStats.firstScore ?? '—' }} → {{ trendStats.lastScore ?? '—' }}
+                <span class="tl-delta">{{ trendStats.trend === 'up' ? '↑' : trendStats.trend === 'down' ? '↓' : '→' }} {{ trendStats.delta > 0 ? '+' : '' }}{{ trendStats.delta }}</span>
+              </div>
+            </div>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <div class="tl-stat">
+              <div class="tl-stat-label">Dernière FC</div>
+              <div class="tl-stat-value">{{ trendStats.lastHr?.toFixed(0) ?? '—' }} <span class="tl-unit">bpm</span></div>
+            </div>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <div class="tl-stat">
+              <div class="tl-stat-label">Dernier SNR</div>
+              <div class="tl-stat-value" :style="{ color: (trendStats.lastSnr ?? 0) >= 3 ? 'var(--green)' : 'var(--warn)' }">
+                {{ trendStats.lastSnr?.toFixed(1) ?? '—' }} <span class="tl-unit">dB</span>
+              </div>
+            </div>
+          </v-col>
+        </v-row>
+
+        <div class="tl-chart-block mb-6">
+          <v-chart :option="timelineOption" autoresize style="height:260px;width:100%" @click="onChartClick" />
+          <div class="tl-hint">Cliquez sur un point pour ouvrir l'analyse · <span style="color:#e8622a">Score</span> · <span style="color:#22d3ee">SNR</span> · <span style="color:#a78bfa">FC</span></div>
+        </div>
+      </template>
+
       <!-- Sessions of this patient -->
       <div class="section-title">Sessions ({{ patient.sessions?.length || 0 }})</div>
       <div v-if="!patient.sessions?.length" class="empty-block" style="padding:40px 20px">
@@ -128,7 +173,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import axios from "axios";
 import { apiUrl } from "../lib/api.js";
@@ -194,6 +239,111 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString("fr-FR", { day:"2-digit", month:"short", year:"numeric" });
 }
 
+const healingSessions = computed(() => {
+  if (!patient.value?.sessions) return [];
+  return [...patient.value.sessions]
+    .filter(s => s.score != null || s.snr_db != null)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+});
+
+const trendStats = computed(() => {
+  const ss = healingSessions.value;
+  if (ss.length < 2) return null;
+  const first = ss[0], last = ss[ss.length - 1];
+  const delta = Math.round((last.score ?? 0) - (first.score ?? 0));
+  return {
+    count:      ss.length,
+    firstScore: first.score,
+    lastScore:  last.score,
+    delta,
+    trend:   delta > 5 ? "up" : delta < -5 ? "down" : "stable",
+    lastHr:  last.hr_bpm,
+    lastSnr: last.snr_db,
+  };
+});
+
+const timelineOption = computed(() => {
+  const ss = healingSessions.value;
+  if (ss.length < 2) return null;
+  const dates     = ss.map(s => formatDate(s.date));
+  const scores    = ss.map(s => s.score     ?? null);
+  const snrs      = ss.map(s => s.snr_db    != null ? +s.snr_db.toFixed(1)    : null);
+  const hrs       = ss.map(s => s.hr_bpm    != null ? +s.hr_bpm.toFixed(1)    : null);
+  const woundPcts = ss.map(s => s.wound_pct != null ? +s.wound_pct.toFixed(1) : null);
+  const hasWound  = woundPcts.some(v => v != null);
+  const ax = {
+    axisLine:  { lineStyle: { color: "#2a2a3e" } },
+    axisTick:  { show: false },
+    axisLabel: { color: "#8b8b9e", fontSize: 10 },
+    splitLine: { lineStyle: { color: "#1e1e2e", type: "dashed" } },
+  };
+  return {
+    backgroundColor: "transparent",
+    grid: { top: 32, right: 52, bottom: 38, left: 46 },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "#16162a",
+      borderColor: "#2a2a3e",
+      textStyle: { color: "#c9c9e0", fontSize: 11 },
+      formatter(params) {
+        let h = `<div style="font-size:.72rem;font-weight:700;color:#8b8b9e;margin-bottom:4px">${params[0].axisValue}</div>`;
+        params.forEach(p => {
+          if (p.value == null) return;
+          h += `<div style="display:flex;align-items:center;gap:6px;margin:2px 0">
+            <span style="width:8px;height:8px;border-radius:50%;background:${p.color};display:inline-block"></span>
+            <span>${p.seriesName}</span>
+            <span style="font-weight:700;margin-left:auto;padding-left:12px">${p.value}</span></div>`;
+        });
+        return h;
+      },
+    },
+    legend: {
+      data: ["Score", "SNR (dB)", "FC (bpm)", ...(hasWound ? ["Plaie (%)"] : [])],
+      textStyle: { color: "#8b8b9e", fontSize: 10 },
+      top: 4, right: 8, itemWidth: 12, itemHeight: 8,
+    },
+    xAxis: { type: "category", data: dates, ...ax, axisLabel: { ...ax.axisLabel, rotate: dates.length > 5 ? 25 : 0 } },
+    yAxis: [
+      { min: 0, max: 100, ...ax },
+      { ...ax, splitLine: { show: false } },
+    ],
+    series: [
+      {
+        name: "Score", type: "line", yAxisIndex: 0, data: scores, smooth: true,
+        symbol: "circle", symbolSize: 7,
+        lineStyle: { color: "#e8622a", width: 2.5 },
+        itemStyle: { color: "#e8622a" },
+        areaStyle: { color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: "rgba(232,98,42,.22)" }, { offset: 1, color: "rgba(232,98,42,.01)" }] } },
+      },
+      {
+        name: "SNR (dB)", type: "line", yAxisIndex: 1, data: snrs, smooth: true,
+        symbol: "circle", symbolSize: 5,
+        lineStyle: { color: "#22d3ee", width: 1.8 },
+        itemStyle: { color: "#22d3ee" },
+      },
+      {
+        name: "FC (bpm)", type: "line", yAxisIndex: 1, data: hrs, smooth: true,
+        symbol: "circle", symbolSize: 5,
+        lineStyle: { color: "#a78bfa", width: 1.8 },
+        itemStyle: { color: "#a78bfa" },
+      },
+      ...(hasWound ? [{
+        name: "Plaie (%)", type: "line", yAxisIndex: 0, data: woundPcts, smooth: true,
+        symbol: "circle", symbolSize: 5,
+        lineStyle: { color: "#f43f5e", width: 1.8, type: "dashed" },
+        itemStyle: { color: "#f43f5e" },
+      }] : []),
+    ],
+  };
+});
+
+function onChartClick(params) {
+  if (params.componentType === "series") {
+    const session = healingSessions.value[params.dataIndex];
+    if (session) router.push(`/analysis/${session.name}`);
+  }
+}
+
 onMounted(async () => {
   await fetchPatient();
   await fetchUnlinked();
@@ -248,4 +398,30 @@ onMounted(async () => {
 .btn-accent-sm { padding:7px 14px; border-radius:7px; background:var(--accent); color:#fff; font-size:0.78rem; font-weight:600; border:none; cursor:pointer; transition:opacity 0.15s; font-family:inherit; }
 .btn-accent-sm:hover { opacity:0.85; }
 .btn-accent-sm:disabled { opacity:0.4; cursor:default; }
+
+/* Timeline */
+.tl-stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  height: 100%;
+}
+.tl-stat-label { font-size: 0.68rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+.tl-stat-value { font-size: 1.05rem; font-weight: 800; color: var(--text); display: flex; align-items: baseline; gap: 5px; }
+.tl-unit  { font-size: 0.7rem; font-weight: 500; color: var(--muted); }
+.tl-delta { font-size: 0.72rem; font-weight: 700; margin-left: 4px; }
+
+.tl-chart-block {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 8px 4px;
+}
+.tl-hint {
+  font-size: 0.68rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 6px 0 8px;
+}
 </style>

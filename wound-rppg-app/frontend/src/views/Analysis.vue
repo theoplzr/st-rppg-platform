@@ -48,6 +48,21 @@
         </v-col>
       </v-row>
 
+      <!-- ── Indicateur masque ─────────────────────────────────── -->
+      <div class="mask-status-bar mb-4">
+        <template v-if="result.has_mask">
+          <v-icon size="13" color="#a78bfa">mdi-check-decagram</v-icon>
+          <span class="msk-on">Analyse effectuée avec masque spatial</span>
+          <span class="msk-sub">Signal, cartes et score de perfusion calculés uniquement sur la zone peinte</span>
+          <span v-if="result.wound_area" class="msk-pct">{{ result.wound_area.pct }}% de la frame</span>
+        </template>
+        <template v-else>
+          <v-icon size="13" color="#f59e0b">mdi-alert-outline</v-icon>
+          <span class="msk-off">Analyse sans masque</span>
+          <span class="msk-sub">Toute la frame est utilisée — dessinez un masque sur la zone de plaie pour cibler l'analyse</span>
+        </template>
+      </div>
+
       <!-- ── Signal POS + FFT ────────────────────────────────────── -->
       <v-row class="mb-5">
         <v-col cols="12" md="8">
@@ -131,7 +146,7 @@
             <div class="card-head">
               <v-icon size="13" color="#06b6d4">mdi-waveform</v-icon>
               TMS
-              <span class="head-hint">Template Matching Score — cohérence de forme des cycles PPG</span>
+              <span class="head-hint">Template Matching Score — corrélation de forme des cycles PPG</span>
             </div>
             <div class="tms-block">
               <div class="tms-value" :style="{ color: result.tms?.is_clean ? 'var(--green)' : 'var(--warn)' }">
@@ -212,7 +227,14 @@
             <span>Chargement de l'aperçu…</span>
           </div>
         </div>
-        <p class="mask-hint">Peindre la zone de plaie en blanc. Le masque sera appliqué lors de la prochaine analyse.</p>
+        <div v-if="maskNeedsReanalysis" class="mask-reanalyze-banner">
+          <v-icon size="13" color="#f59e0b">mdi-refresh-circle</v-icon>
+          Masque enregistré — les résultats actuels ne l'intègrent pas encore.
+          <button class="btn-reanalyze" @click="runAnalysis(true)" :disabled="loading">
+            {{ loading ? 'Calcul…' : 'Relancer l\'analyse' }}
+          </button>
+        </div>
+        <p v-else class="mask-hint">Peindre la zone de plaie en blanc · le masque sera appliqué à la prochaine analyse (bouton "Relancer").</p>
       </div>
 
       <!-- ── POS local vs global (si pixel cliqué) ─────────────── -->
@@ -448,15 +470,6 @@
               </div>
             </div>
 
-            <!-- 3D Surface — pleine largeur -->
-            <div v-if="zoneResult?.surface3d" class="surface3d-block">
-              <div class="surface3d-head">
-                <v-icon size="14" color="#f59e0b">mdi-cube-outline</v-icon>
-                Surface 3D — Amplitude de perfusion spatiale
-                <span style="font-size:0.68rem;color:var(--muted);margin-left:6px">hauteur = amplitude PPG · couleur = SNR dB · rotation souris</span>
-              </div>
-              <v-chart :option="zoneSurfaceOption" autoresize style="height:440px;width:100%" />
-            </div>
           </div>
         </div>
 
@@ -935,8 +948,9 @@ async function runAutoSegment() {
 const maskBgCanvas   = ref(null);
 const maskDrawCanvas = ref(null);
 const thumbnail      = ref(null);
-const maskSaved      = ref(false);
-const maskSaving     = ref(false);
+const maskSaved             = ref(false);
+const maskSaving            = ref(false);
+const maskNeedsReanalysis   = ref(false);
 const brushSize      = ref(18);
 const erasing        = ref(false);
 let   isDrawing      = false;
@@ -1010,6 +1024,7 @@ async function saveMask() {
   try {
     await axios.post(apiUrl(`/sessions/${sessionId.value}/mask`), { mask: b64 });
     maskSaved.value = true;
+    maskNeedsReanalysis.value = true;
   } finally {
     maskSaving.value = false;
   }
@@ -1073,6 +1088,7 @@ onMounted(async () => {
 
 async function runAnalysis(force) {
   loading.value = true;
+  maskNeedsReanalysis.value = false;
   try { result.value = await store.analyze(sessionId.value, force); }
   finally { loading.value = false; }
 }
@@ -1344,6 +1360,51 @@ const interpItems = computed(() => {
   font-size: 0.8rem; color: var(--muted);
 }
 .mask-hint { font-size: 0.72rem; color: var(--muted); text-align: center; padding: 0 16px 14px; margin: 0; }
+
+/* Banner après sauvegarde masque */
+.mask-reanalyze-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(245,158,11,0.08);
+  border-top: 1px solid rgba(245,158,11,0.2);
+  padding: 10px 16px;
+  font-size: 0.78rem;
+  color: #f59e0b;
+  font-weight: 500;
+}
+.btn-reanalyze {
+  margin-left: auto;
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: rgba(245,158,11,0.15);
+  border: 1px solid rgba(245,158,11,0.35);
+  color: #f59e0b;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+.btn-reanalyze:hover { opacity: 0.8; }
+.btn-reanalyze:disabled { opacity: 0.4; cursor: default; }
+
+/* Barre d'état masque dans les résultats */
+.mask-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+}
+.mask-status-bar:has(.msk-on)  { background: rgba(167,139,250,0.07); border: 1px solid rgba(167,139,250,0.2); }
+.mask-status-bar:has(.msk-off) { background: rgba(245,158,11,0.06);  border: 1px solid rgba(245,158,11,0.2);  }
+.msk-on  { font-weight: 700; color: #a78bfa; }
+.msk-off { font-weight: 700; color: #f59e0b; }
+.msk-sub { color: var(--muted); font-size: 0.7rem; }
+.msk-pct { margin-left: auto; font-weight: 700; color: #a78bfa; font-size: 0.72rem; }
 
 /* Card head hint (acronym subtitle) */
 .head-hint {

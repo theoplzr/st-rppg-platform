@@ -1,6 +1,5 @@
 <template>
-  <aside class="ecrin-sidebar">
-    <!-- Brand -->
+  <aside class="ecrin-sidebar" :class="{ 'is-open': isOpen }">
     <div class="sb-brand">
       <div class="sb-mark">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -13,10 +12,8 @@
       </div>
     </div>
 
-    <!-- Separator -->
     <div class="sb-rule" />
 
-    <!-- Nav -->
     <nav class="sb-nav">
       <router-link
         v-for="item in navItems"
@@ -25,13 +22,16 @@
         class="sb-link"
         active-class="sb-link--active"
         exact-active-class="sb-link--active"
+        @click="$emit('close')"
       >
         <span class="sb-link-indicator" />
+        <svg class="sb-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path :d="item.icon" />
+        </svg>
         {{ item.label }}
       </router-link>
     </nav>
 
-    <!-- Footer -->
     <div class="sb-footer">
       <div class="sb-footer-dot" />
       <div>
@@ -43,13 +43,15 @@
 </template>
 
 <script setup>
+defineProps({ isOpen: { type: Boolean, default: false } });
+defineEmits(["close"]);
+
 const navItems = [
-  { to: "/",          label: "Dashboard"   },
-  { to: "/acquire",   label: "Acquisition" },
-  { to: "/sessions",  label: "Sessions"    },
-  { to: "/patients",  label: "Patients"    },
-  { to: "/scenarios", label: "Scénarios"   },
-  { to: "/report",    label: "Rapport"     },
+  { to: "/",          label: "Dashboard",   icon: "M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z" },
+  { to: "/acquire",   label: "Acquisition", icon: "M8 2a4 4 0 100 8 4 4 0 000-8zM8 14s-6-2-6-5" },
+  { to: "/sessions",  label: "Sessions",    icon: "M2 4h12M2 8h8M2 12h10" },
+  { to: "/patients",  label: "Patients",    icon: "M8 8a3 3 0 100-6 3 3 0 000 6zM2 14c0-3 2.7-5 6-5s6 2 6 5" },
+  { to: "/scenarios", label: "Scénarios",   icon: "M3 8l3 3 7-7" },
 ];
 </script>
 
@@ -60,15 +62,18 @@ const navItems = [
   left: 0;
   width: 220px;
   height: 100vh;
-  background: #000;
-  border-right: 1px solid #111122;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   z-index: 100;
   overflow: hidden;
+  transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.32s,
+              background 0.3s,
+              border-color 0.3s;
 }
 
-/* Subtle ambient glow inside sidebar */
 .ecrin-sidebar::before {
   content: '';
   position: absolute;
@@ -78,6 +83,17 @@ const navItems = [
   height: 300px;
   background: radial-gradient(ellipse at 30% 100%, rgba(232,98,42,0.07) 0%, transparent 70%);
   pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .ecrin-sidebar {
+    transform: translateX(-100%);
+    box-shadow: none;
+  }
+  .ecrin-sidebar.is-open {
+    transform: translateX(0);
+    box-shadow: 0 0 60px rgba(0,0,0,0.5);
+  }
 }
 
 /* ── Brand ─────────────────────────────────────────── */
@@ -97,29 +113,33 @@ const navItems = [
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  transition: background 0.3s, border-color 0.3s;
 }
 .sb-name {
   font-family: 'Syne', 'Inter', sans-serif;
   font-size: 1rem;
   font-weight: 800;
-  color: #f0f0f4;
+  color: var(--text);
   letter-spacing: -0.03em;
   line-height: 1;
+  transition: color 0.3s;
 }
 .sb-sub {
   font-size: 0.55rem;
   font-weight: 600;
-  color: #55556a;
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin-top: 4px;
+  transition: color 0.3s;
 }
 
 /* ── Rule ──────────────────────────────────────────── */
 .sb-rule {
   height: 1px;
-  background: linear-gradient(to right, transparent, #1a1a2e 40%, transparent);
+  background: linear-gradient(to right, transparent, var(--border) 40%, transparent);
   margin: 0 24px 8px;
+  transition: background 0.3s;
 }
 
 /* ── Nav ───────────────────────────────────────────── */
@@ -134,12 +154,12 @@ const navItems = [
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 9px;
+  padding: 9px 12px;
   border-radius: 10px;
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   font-weight: 500;
-  color: #55556a;
+  color: var(--muted);
   text-decoration: none;
   transition: color 0.2s, background 0.2s;
   letter-spacing: -0.01em;
@@ -148,17 +168,23 @@ const navItems = [
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: var(--accent, #e8622a);
+  background: var(--accent);
   opacity: 0;
   transition: opacity 0.2s, transform 0.2s;
   flex-shrink: 0;
 }
+.sb-icon {
+  opacity: 0.5;
+  transition: opacity 0.2s;
+  flex-shrink: 0;
+}
 .sb-link:hover {
-  color: #b8b8cc;
+  color: var(--text2);
   background: rgba(255,255,255,0.03);
 }
+.sb-link:hover .sb-icon { opacity: 0.75; }
 .sb-link--active {
-  color: #f0f0f4 !important;
+  color: var(--text) !important;
   background: rgba(232,98,42,0.08) !important;
   font-weight: 600;
 }
@@ -166,6 +192,7 @@ const navItems = [
   opacity: 1;
   transform: scale(1.3);
 }
+.sb-link--active .sb-icon { opacity: 1; }
 
 /* ── Footer ────────────────────────────────────────── */
 .sb-footer {
@@ -173,15 +200,16 @@ const navItems = [
   align-items: flex-start;
   gap: 10px;
   padding: 20px 24px;
-  border-top: 1px solid #0e0e1c;
+  border-top: 1px solid var(--border);
   position: relative;
   z-index: 1;
+  transition: border-color 0.3s;
 }
 .sb-footer-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #22d47e;
+  background: var(--green);
   margin-top: 5px;
   flex-shrink: 0;
   box-shadow: 0 0 6px rgba(34,212,126,0.5);
@@ -189,14 +217,16 @@ const navItems = [
 .sb-ref {
   font-size: 0.65rem;
   font-weight: 700;
-  color: #b8b8cc;
+  color: var(--text2);
   font-family: 'SF Mono', 'Fira Code', monospace;
   letter-spacing: 0.03em;
+  transition: color 0.3s;
 }
 .sb-lab {
   font-size: 0.6rem;
-  color: #55556a;
+  color: var(--muted);
   margin-top: 3px;
   letter-spacing: 0.02em;
+  transition: color 0.3s;
 }
 </style>

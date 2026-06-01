@@ -11,31 +11,14 @@
       </span>
     </div>
 
-    <!-- Mode tabs -->
-    <div class="acq-tabs mb-5">
-      <button :class="['acq-tab', { active: mode === 'camera' }]" :disabled="phase !== 'idle'"
-        @click="mode = 'camera'">
-        <v-icon size="14">mdi-record-circle-outline</v-icon> Caméra live
-      </button>
-      <button :class="['acq-tab', { active: mode === 'upload' }]" :disabled="phase !== 'idle'"
-        @click="mode = 'upload'">
-        <v-icon size="14">mdi-folder-upload-outline</v-icon> Session existante
-      </button>
-      <button :class="['acq-tab', { active: mode === 'frames' }]" :disabled="phase !== 'idle'"
-        @click="mode = 'frames'">
-        <v-icon size="14">mdi-image-multiple-outline</v-icon> Déposer des frames
-      </button>
-    </div>
-
-    <!-- ── CAMERA MODE ── -->
-    <template v-if="mode === 'camera'">
+    <!-- ── CAMERA LIVE ── -->
       <v-row>
         <!-- Camera preview -->
         <v-col cols="12" md="7">
           <div class="card-block" style="position: relative; overflow: hidden">
             <div class="camera-wrapper">
               <video ref="videoEl" autoplay playsinline muted class="camera-video" />
-              <canvas ref="canvasEl" :width="CFG.width" :height="CFG.height" style="display:none" />
+              <canvas ref="canvasEl" :width="CFG.w" :height="CFG.h" style="display:none" />
 
               <div v-if="!cameraReady && !cameraError" class="camera-overlay">
                 <v-progress-circular indeterminate color="primary" size="48" />
@@ -82,6 +65,11 @@
                 <span v-if="liveFpsDropped" style="font-size:0.68rem; margin-left:2px">⚠ drops</span>
               </span>
 
+              <span class="ram-badge" :class="ramColor">
+                <v-icon size="11">mdi-memory</v-icon>
+                {{ ramEstimateMB }} MB
+              </span>
+
               <span class="ml-auto" style="color:var(--muted); font-size:0.8rem">
                 {{ elapsedSec.toFixed(1) }} s / {{ recordDuration }} s
               </span>
@@ -125,33 +113,66 @@
               Protocole d'acquisition
             </div>
             <div style="padding: 16px">
-              <div class="param-grid mb-4">
-                <div class="param-item">
-                  <div class="param-label">Résolution</div>
-                  <div class="param-value">{{ CFG.width }} × {{ CFG.height }}</div>
-                </div>
-                <div class="param-item">
-                  <div class="param-label">Format</div>
-                  <div class="param-value">PNG</div>
-                </div>
-                <div class="param-item">
-                  <div class="param-label">{{ captureMode === 'duration' ? 'Durée' : 'Durée estimée' }}</div>
-                  <div class="param-value">{{ captureMode === 'duration' ? recordDuration + ' s' : (targetFrames / recordFps).toFixed(1) + ' s' }}</div>
-                </div>
-                <div class="param-item">
-                  <div class="param-label">Frames totales</div>
-                  <div class="param-value">{{ totalFrames }}</div>
-                </div>
+
+              <!-- Zone + Variant -->
+              <div class="acq-form-row mb-3">
+                <v-text-field
+                  v-model="zoneLabel"
+                  label="Zone étudiée *"
+                  placeholder="avant_bras, paume, plaie_tibiale…"
+                  density="compact" variant="outlined"
+                  :disabled="phase !== 'idle'"
+                  prepend-inner-icon="mdi-map-marker-outline"
+                  hide-details
+                />
+                <v-text-field
+                  v-model="variantLabel"
+                  label="Variante (optionnel)"
+                  placeholder="lumiere_forte, J3…"
+                  density="compact" variant="outlined"
+                  :disabled="phase !== 'idle'"
+                  prepend-inner-icon="mdi-tag-outline"
+                  hide-details
+                />
               </div>
+
+              <!-- Session name preview -->
+              <div class="session-preview mb-4">
+                <span class="session-preview-label">
+                  <v-icon size="11" color="#55556a">mdi-folder-outline</v-icon>
+                  Dossier
+                </span>
+                <span class="session-preview-name">{{ sessionNamePreview }}</span>
+              </div>
+
+              <div style="height:1px; background:var(--border); margin-bottom:16px" />
+
+              <!-- Resolution selector -->
+              <div class="param-label mb-2">Résolution</div>
+              <v-btn-toggle v-model="selectedResIdx" mandatory density="compact"
+                color="primary" variant="outlined" :disabled="phase !== 'idle'" class="mb-4">
+                <v-btn :value="0">256²</v-btn>
+                <v-btn :value="1">512² <v-chip size="x-small" color="primary" variant="tonal" class="ml-1">défaut</v-chip></v-btn>
+                <v-btn :value="2">640×480</v-btn>
+                <v-btn :value="3">1280×720</v-btn>
+              </v-btn-toggle>
+
+              <!-- Format selector -->
+              <div class="param-label mb-2">Format des frames</div>
+              <v-btn-toggle v-model="captureFormat" mandatory density="compact"
+                color="primary" variant="outlined" :disabled="phase !== 'idle'" class="mb-4">
+                <v-btn value="png">PNG <span style="font-size:0.65rem;opacity:.6;margin-left:3px">lossless</span></v-btn>
+                <v-btn value="jpg">JPEG <span style="font-size:0.65rem;opacity:.6;margin-left:3px">compact</span></v-btn>
+              </v-btn-toggle>
 
               <!-- FPS selector -->
               <div class="param-label mb-2">Cadence (FPS)</div>
               <v-btn-toggle v-model="recordFps" mandatory density="compact"
                 color="primary" variant="outlined" :disabled="phase !== 'idle'" class="mb-4">
-                <v-btn :value="25">25 FPS</v-btn>
-                <v-btn :value="30">30 FPS</v-btn>
-                <v-btn :value="50">50 FPS <v-chip size="x-small" color="primary" variant="tonal" class="ml-1">Lab</v-chip></v-btn>
-                <v-btn :value="60">60 FPS</v-btn>
+                <v-btn :value="25">25</v-btn>
+                <v-btn :value="30">30</v-btn>
+                <v-btn :value="50">50 <v-chip size="x-small" color="primary" variant="tonal" class="ml-1">Lab</v-chip></v-btn>
+                <v-btn :value="60">60</v-btn>
               </v-btn-toggle>
 
               <!-- Capture mode toggle -->
@@ -192,22 +213,30 @@
                   :disabled="phase !== 'idle'" density="compact" class="mb-1" />
                 <div class="d-flex justify-space-between mb-4" style="font-size:0.7rem; color:var(--muted)">
                   <span>100</span>
-                  <span style="color:var(--muted)">≈ {{ (targetFrames / recordFps).toFixed(1) }} s à {{ recordFps }} FPS</span>
+                  <span style="color:var(--muted)">≈ {{ (targetFrames / recordFps).toFixed(1) }} s @ {{ recordFps }} FPS</span>
                   <span>1200</span>
                 </div>
               </template>
 
-              <div style="height:1px; background:var(--border); margin-bottom:16px" />
-              <v-text-field
-                v-model="sessionLabel"
-                label="Identifiant de session (optionnel)"
-                placeholder="Ex: plaie_J3, paume_droite"
-                density="compact"
-                variant="outlined"
-                :disabled="phase !== 'idle'"
-                prepend-inner-icon="mdi-tag-outline"
-                hide-details
-              />
+              <!-- Summary -->
+              <div class="param-grid mt-2">
+                <div class="param-item">
+                  <div class="param-label">Résolution</div>
+                  <div class="param-value">{{ CFG.w }} × {{ CFG.h }}</div>
+                </div>
+                <div class="param-item">
+                  <div class="param-label">Format</div>
+                  <div class="param-value">{{ captureFormat.toUpperCase() }}</div>
+                </div>
+                <div class="param-item">
+                  <div class="param-label">Durée estimée</div>
+                  <div class="param-value">{{ captureMode === 'duration' ? recordDuration + ' s' : (targetFrames / recordFps).toFixed(1) + ' s' }}</div>
+                </div>
+                <div class="param-item">
+                  <div class="param-label">Frames</div>
+                  <div class="param-value">{{ totalFrames }}</div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -240,173 +269,6 @@
           </div>
         </v-col>
       </v-row>
-    </template>
-
-    <!-- ── UPLOAD MODE ── -->
-    <template v-if="mode === 'upload'">
-      <v-row justify="center">
-        <v-col cols="12" md="8">
-          <div
-            class="drop-zone"
-            :class="{ 'drop-zone--active': isDragging, 'drop-zone--disabled': phase !== 'idle' }"
-            @dragover.prevent="isDragging = true"
-            @dragleave="isDragging = false"
-            @drop.prevent="onDrop"
-            @click="phase === 'idle' && fileInput.click()"
-          >
-            <input ref="fileInput" type="file" accept=".zip,.avi" style="display:none"
-                   @change="onFileChange" />
-
-            <template v-if="phase === 'idle'">
-              <v-icon size="52" color="primary" class="mb-4">mdi-folder-upload-outline</v-icon>
-              <div class="drop-title">Déposer la session ici</div>
-              <div class="drop-sub mb-4">ou cliquer pour sélectionner le fichier</div>
-              <div class="d-flex gap-2 justify-center mb-3">
-                <span class="format-chip">
-                  <v-icon size="12">mdi-zip-box</v-icon> ZIP
-                </span>
-                <span class="format-chip format-chip--teal">
-                  <v-icon size="12">mdi-video</v-icon> AVI
-                </span>
-              </div>
-              <div class="drop-sub">Session exportée depuis le protocole d'acquisition · conversion automatique</div>
-            </template>
-
-            <template v-else-if="phase !== 'done' && phase !== 'error'">
-              <v-progress-circular indeterminate color="primary" size="48" class="mb-4" />
-              <div class="drop-title" style="color:var(--accent)">{{ statusMessage }}</div>
-              <div v-if="phase === 'uploading' && uploadProgress > 0" class="mt-4" style="width:100%;max-width:300px">
-                <div class="progress-track">
-                  <div class="progress-fill" :style="{ width: uploadProgress + '%' }" />
-                </div>
-              </div>
-            </template>
-
-            <template v-else-if="phase === 'done'">
-              <v-icon size="52" style="color:var(--green)" class="mb-4">mdi-check-circle</v-icon>
-              <div class="drop-title" style="color:var(--green)">Analyse terminée</div>
-            </template>
-
-            <template v-else>
-              <v-icon size="52" style="color:var(--danger)" class="mb-4">mdi-alert-circle</v-icon>
-              <div class="drop-title" style="color:var(--danger)">{{ statusMessage }}</div>
-              <button class="btn-ghost mt-4" @click.stop="resetAcquisition">Réessayer</button>
-            </template>
-          </div>
-        </v-col>
-      </v-row>
-    </template>
-
-    <!-- ── FRAMES MODE ── -->
-    <template v-if="mode === 'frames'">
-      <v-row justify="center">
-        <v-col cols="12" md="8">
-          <div
-            class="drop-zone frames-drop"
-            :class="{ 'drop-zone--active': frameDropDragging, 'drop-zone--disabled': phase !== 'idle' }"
-            @dragover.prevent="frameDropDragging = true"
-            @dragleave="frameDropDragging = false"
-            @drop.prevent="onFramesDrop"
-            @click="phase === 'idle' && !frameFiles.length && frameFileInput.click()"
-          >
-            <input ref="frameFileInput" type="file" accept=".png,.jpg,.jpeg" multiple
-                   style="display:none" @change="onFramesInput" />
-
-            <template v-if="!frameFiles.length && phase === 'idle'">
-              <v-icon size="52" color="primary" class="mb-4">mdi-image-multiple-outline</v-icon>
-              <div class="drop-title">Déposer les frames ici</div>
-              <div class="drop-sub mb-4">ou cliquer pour sélectionner les images</div>
-              <div class="d-flex gap-2 justify-center mb-3">
-                <span class="format-chip">
-                  <v-icon size="12">mdi-image-outline</v-icon> PNG
-                </span>
-                <span class="format-chip format-chip--teal">
-                  <v-icon size="12">mdi-image-outline</v-icon> JPG
-                </span>
-              </div>
-              <div class="drop-sub">Images triées par nom de fichier (ordre numérique)</div>
-            </template>
-
-            <template v-else-if="phase === 'idle' && frameFiles.length">
-              <div class="frames-preview-row">
-                <img v-if="framePreviewUrl" :src="framePreviewUrl" class="frames-thumb" />
-                <div class="frames-info">
-                  <div class="frames-count">{{ frameFiles.length }}<span> frames</span></div>
-                  <div class="frames-detail">Premier : {{ frameFiles[0]?.name }}</div>
-                  <div class="frames-detail">Dernier  : {{ frameFiles[frameFiles.length - 1]?.name }}</div>
-                  <div class="frames-detail mt-1" style="color:var(--accent)">
-                    Durée estimée : {{ (frameFiles.length / frameFps).toFixed(1) }} s à {{ frameFps }} FPS
-                  </div>
-                </div>
-              </div>
-              <button class="btn-ghost mt-4" @click.stop="clearFrames">
-                <v-icon size="14">mdi-close</v-icon> Effacer
-              </button>
-            </template>
-
-            <template v-else-if="phase !== 'done' && phase !== 'error'">
-              <v-progress-circular indeterminate color="primary" size="48" class="mb-4" />
-              <div class="drop-title" style="color:var(--accent)">{{ statusMessage }}</div>
-              <div v-if="phase === 'uploading' && uploadProgress > 0" class="mt-4" style="width:100%;max-width:300px">
-                <div class="progress-track">
-                  <div class="progress-fill" :style="{ width: uploadProgress + '%' }" />
-                </div>
-              </div>
-            </template>
-
-            <template v-else-if="phase === 'done'">
-              <v-icon size="52" style="color:var(--green)" class="mb-4">mdi-check-circle</v-icon>
-              <div class="drop-title" style="color:var(--green)">Analyse terminée</div>
-            </template>
-
-            <template v-else>
-              <v-icon size="52" style="color:var(--danger)" class="mb-4">mdi-alert-circle</v-icon>
-              <div class="drop-title" style="color:var(--danger)">{{ statusMessage }}</div>
-              <button class="btn-ghost mt-4" @click.stop="resetAcquisition">Réessayer</button>
-            </template>
-          </div>
-        </v-col>
-      </v-row>
-
-      <v-row v-if="frameFiles.length && phase === 'idle'" justify="center" class="mt-4">
-        <v-col cols="12" md="8">
-          <div class="card-block">
-            <div class="card-head">
-              <v-icon size="13" color="#e8622a">mdi-tune</v-icon>
-              Paramètres de la session
-            </div>
-            <div style="padding: 16px">
-              <div class="param-label mb-2">Cadence d'acquisition (FPS)</div>
-              <v-btn-toggle v-model="frameFps" mandatory density="compact"
-                color="primary" variant="outlined" class="mb-4">
-                <v-btn :value="25">25 FPS</v-btn>
-                <v-btn :value="30">30 FPS</v-btn>
-                <v-btn :value="50">50 FPS</v-btn>
-                <v-btn :value="60">60 FPS</v-btn>
-              </v-btn-toggle>
-
-              <div style="height:1px; background:var(--border); margin-bottom:16px" />
-              <v-text-field
-                v-model="frameSessionLabel"
-                label="Identifiant de session (optionnel)"
-                placeholder="Ex: plaie_J3, paume_droite"
-                density="compact"
-                variant="outlined"
-                prepend-inner-icon="mdi-tag-outline"
-                hide-details
-              />
-              <div class="mt-4">
-                <button class="btn-accent" style="width:100%; justify-content:center; padding:14px"
-                  @click="buildFrameSession">
-                  <v-icon size="16">mdi-play-circle-outline</v-icon>
-                  Créer et analyser la session
-                </button>
-              </div>
-            </div>
-          </div>
-        </v-col>
-      </v-row>
-    </template>
 
     <!-- Results -->
     <transition name="slide-up">
@@ -500,11 +362,19 @@ import FFTChart    from "../components/charts/FFTChart.vue";
 import { apiUrl } from "../lib/api.js";
 
 // Acquisition protocol — resolution matches colleagues' OpenCV script (512×512)
-const CFG = { width: 512, height: 512 };
+const resolutionOptions = [
+  { label: "256 × 256",  w: 256,  h: 256  },
+  { label: "512 × 512",  w: 512,  h: 512  },
+  { label: "640 × 480",  w: 640,  h: 480  },
+  { label: "1280 × 720", w: 1280, h: 720  },
+];
+const selectedResIdx = ref(1);
+const captureFormat  = ref("png");         // "png" | "jpg"
+const CFG = computed(() => resolutionOptions[selectedResIdx.value]);
 
 const recordFps      = ref(50);
 const recordDuration = ref(30);
-const captureMode    = ref("duration");   // "duration" | "frames"
+const captureMode    = ref("duration");    // "duration" | "frames"
 const targetFrames   = ref(400);
 const totalFrames    = computed(() =>
   captureMode.value === "frames"
@@ -512,17 +382,25 @@ const totalFrames    = computed(() =>
     : recordFps.value * recordDuration.value
 );
 
+// Zone / session naming
+const zoneLabel    = ref("");
+const variantLabel = ref("");
+function todayDateStr() {
+  return new Date().toISOString().slice(0, 10).replace(/-/g, "");
+}
+const sessionNamePreview = computed(() => {
+  const zone    = (zoneLabel.value.trim() || "zone").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+  const variant = variantLabel.value.trim().replace(/[^a-zA-Z0-9]+/g, "_").toLowerCase().replace(/^_|_$/g, "");
+  return variant ? `${zone}_${todayDateStr()}_${variant}` : `${zone}_${todayDateStr()}`;
+});
+
 // Refs — DOM
 const videoEl   = ref(null);
 const canvasEl  = ref(null);
-const fileInput = ref(null);
 
 // State
-const mode           = ref("camera");
-const isDragging     = ref(false);
 const cameraReady    = ref(false);
 const cameraError    = ref("");
-const sessionLabel   = ref("");
 const phase          = ref("idle");
 const countdown      = ref(0);
 const capturedFrames = ref(0);
@@ -565,8 +443,8 @@ async function initCamera() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
-        width:     { ideal: CFG.width },
-        height:    { ideal: CFG.height },
+        width:     { ideal: CFG.value.w },
+        height:    { ideal: CFG.value.h },
         frameRate: { ideal: recordFps.value },
       },
       audio: false,
@@ -626,12 +504,14 @@ function captureLoop(timestamp) {
 
   if (capturedFrames.value < expectedFrames) {
     // Draw current video frame to hidden canvas
-    canvasCtx.drawImage(videoEl.value, 0, 0, CFG.width, CFG.height);
-    frames.push(canvasEl.value.toDataURL("image/png"));
+    canvasCtx.drawImage(videoEl.value, 0, 0, CFG.value.w, CFG.value.h);
+    const mime = captureFormat.value === "jpg" ? "image/jpeg" : "image/png";
+    const dataUrl = canvasEl.value.toDataURL(mime, 0.93);
+    frames.push(dataUrl.slice(dataUrl.indexOf(",") + 1)); // stocke base64 nu, sans le header data:...
     timestamps.push(parseFloat((elapsedMs / 1000).toFixed(6)));
 
-    // Extract mean green channel (stride = 16 px → 16384 samples for 512×512)
-    const px = canvasCtx.getImageData(0, 0, CFG.width, CFG.height).data;
+    // Extract mean green channel
+    const px = canvasCtx.getImageData(0, 0, CFG.value.w, CFG.value.h).data;
     let g = 0, n = 0;
     for (let i = 0; i < px.length; i += 64) { // 64 bytes = 16 RGBA pixels
       g += px[i + 1]; // green is byte 1 of each RGBA group
@@ -738,15 +618,12 @@ async function packageAndUpload() {
   phase.value      = "packaging";
   statusMessage.value = "Préparation de la session…";
 
-  const now        = new Date();
-  const stamp      = now.toISOString().replace(/[-:T]/g, "").slice(0, 15);
-  const suffix     = sessionLabel.value
-    ? "_" + sessionLabel.value.replace(/[^a-zA-Z0-9_\-.]/g, "_")
-    : "";
-  const sessionName = `session_${stamp}${suffix}`;
+  const now         = new Date();
+  const sessionName = sessionNamePreview.value;
   currentSession.value = sessionName;
 
   const measuredFps = frames.length / timestamps[timestamps.length - 1];
+  const ext = captureFormat.value === "jpg" ? "jpg" : "png";
   const metadata = {
     session_name:   sessionName,
     date:           now.toISOString(),
@@ -757,23 +634,29 @@ async function packageAndUpload() {
     measured_fps:   parseFloat(measuredFps.toFixed(3)),
     nb_frames:      frames.length,
     duration_s:     parseFloat(timestamps[timestamps.length - 1].toFixed(3)),
-    frame_width:    CFG.width,
-    frame_height:   CFG.height,
-    save_format:    "png",
+    frame_width:    CFG.value.w,
+    frame_height:   CFG.value.h,
+    save_format:    ext,
+    zone:           zoneLabel.value.trim() || "zone",
+    variant:        variantLabel.value.trim() || null,
     timestamps_rel: timestamps,
   };
 
-  const zip         = new JSZip();
-  const rootFolder  = zip.folder(sessionName);
+  const zip          = new JSZip();
+  const rootFolder   = zip.folder(sessionName);
   const framesFolder = rootFolder.folder("frames");
+  const masksFolder  = rootFolder.folder("masks");
+  masksFolder.file(".gitkeep", "");
 
-  for (let i = 0; i < frames.length; i++) {
-    const base64 = frames[i].split(",")[1];
+  const n = frames.length;
+  for (let i = 0; i < n; i++) {
+    statusMessage.value = `Compression ${i + 1} / ${n}…`;
     const num = String(i).padStart(4, "0");
-    framesFolder.file(`${num}.png`, base64, { base64: true });
+    framesFolder.file(`${num}.${ext}`, frames[i], { base64: true });
+    frames[i] = null; // libère immédiatement — évite le double-pic mémoire
   }
-  rootFolder.file("metadata.json", JSON.stringify(metadata, null, 2));
   frames = [];
+  rootFolder.file("metadata.json", JSON.stringify(metadata, null, 2));
 
   const zipBlob = await zip.generateAsync({
     type:               "blob",
@@ -1011,9 +894,21 @@ function resetAcquisition() {
   frames     = [];
   timestamps = [];
   liveGreenBuf.length = 0;
-  clearFrames();
-  frameSessionLabel.value = "";
 }
+
+// ── RAM estimation ────────────────────────────────────────
+const ramEstimateMB = computed(() => {
+  const bytesPerFrame = captureFormat.value === "jpg"
+    ? CFG.value.w * CFG.value.h * 0.08   // JPEG Q93 ≈ 8% of raw
+    : CFG.value.w * CFG.value.h * 0.6;   // PNG ≈ 60% of raw
+  return Math.round(capturedFrames.value * bytesPerFrame / 1_000_000);
+});
+const ramColor = computed(() => {
+  const mb = ramEstimateMB.value;
+  if (mb < 150)  return "ram-ok";
+  if (mb < 400)  return "ram-warn";
+  return "ram-danger";
+});
 
 // ── Computed ──────────────────────────────────────────────
 const qualityColor = computed(() => {
@@ -1056,19 +951,31 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-/* ── Tabs ──────────────────────────────────────────────── */
-.acq-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); padding-bottom: 0; }
-.acq-tab {
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 8px 18px; border-radius: 8px 8px 0 0;
-  background: transparent; border: none; border-bottom: 2px solid transparent;
-  color: var(--muted); font-size: 0.8rem; font-weight: 600;
-  cursor: pointer; transition: all 0.15s; margin-bottom: -1px;
-  text-transform: uppercase; letter-spacing: 0.5px;
+/* ── Zone / session naming ────────────────────────────────── */
+.acq-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
-.acq-tab:hover { color: var(--text2); }
-.acq-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.acq-tab:disabled { opacity: 0.4; cursor: default; }
+.session-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+}
+.session-preview-label {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 0.68rem; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap;
+}
+.session-preview-name {
+  font-size: 0.78rem; font-weight: 700; color: var(--accent);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  word-break: break-all;
+}
 
 /* ── Done badge ─────────────────────────────────────────── */
 .done-badge {
@@ -1118,6 +1025,10 @@ onUnmounted(() => {
 
 /* ── Frame bar ──────────────────────────────────────────── */
 .frame-bar { display: flex; align-items: center; gap: 6px; padding: 8px 14px; font-size: 0.8rem; color: var(--text); border-top: 1px solid var(--border); }
+.ram-badge { display: flex; align-items: center; gap: 3px; font-size: 0.72rem; font-weight: 700; padding: 2px 7px; border-radius: 5px; }
+.ram-ok     { background: rgba(34,212,126,.1);  color: var(--green);  }
+.ram-warn   { background: rgba(245,158,11,.1);  color: var(--warn);   }
+.ram-danger { background: rgba(239,68,68,.12);  color: var(--danger); }
 .frame-count { color: var(--accent); font-weight: 700; }
 
 .fps-live {
